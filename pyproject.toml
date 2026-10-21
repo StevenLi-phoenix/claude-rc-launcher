@@ -1,0 +1,19 @@
+[project]
+name = "claude-launchpad"
+version = "0.1.0"
+description = "One tap to start a Claude Code session with Remote Control on your Mac, from any device on your tailnet."
+requires-python = ">=3.11"
+license = "MIT"
+dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+markers = ["unit: fast, no subprocesses", "integration: runs a subprocess or an HTTP server"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
