@@ -480,7 +480,8 @@ def test_parse_etime(raw: str, seconds: int) -> None:
 def test_reap_only_our_orphaned_old_instances(app: lp.RCLauncher, runner: FakeRunner) -> None:
     g = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
     sig = "-e /opt/homebrew/bin/tmux -L claude-rc new-session -A -s {} -c /x /s/run.sh"
-    runner.live["rc-live"] = RUNNING_PANE
+    runner.live["rc-live"] = RUNNING_PANE  # FakeRunner reports it created at 1792600000
+    app.clock = lambda: 1792600000 + 300  # ...when the 05:00-old instance 102 started it
     runner.ps_out = "\n".join(
         [
             f"  101   1-02:00:00 {g}",  # the user's own Ghostty
