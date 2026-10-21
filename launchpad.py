@@ -183,6 +183,7 @@ def ghostty_argv(cfg: Config, tmux_name: str, workdir: Path, script: Path, title
         "--quit-after-last-window-closed=true",
         "--window-save-state=never",
         "--confirm-close-surface=false",
+        "--auto-update=off",  # otherwise Sparkle's update prompt keeps the instance alive after the window closes
         "-e", cfg.tmux_bin, "-L", cfg.socket, "new-session", "-A", "-s", tmux_name,
         "-c", str(workdir), str(script),
     ]  # fmt: skip

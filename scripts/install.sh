@@ -65,7 +65,7 @@ probe_fda() {
   local out
   out=$(mktemp -t launchpad-fda)
   open -na "$GHOSTTY" --args --title="launchpad · permission check" --quit-after-last-window-closed=true \
-    --window-save-state=never -e /bin/bash -c \
+    --window-save-state=never --auto-update=off -e /bin/bash -c \
     "if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'"
   for _ in $(seq 1 30); do
     [[ -s $out ]] && break
