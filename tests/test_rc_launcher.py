@@ -45,7 +45,7 @@ RUNNING_PANE = textwrap.dedent(
 
     ❯ say hi in 3 words
 
-      /remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_01RMsXTCpV6y6oBpE3UFnCMQ
+      /remote-control is active · Continue here, on your phone, or at https://claude.ai/code/session_01TestTestTestTestTestTe
 
     ⏺ hi there friend
 
@@ -278,7 +278,7 @@ def test_parse_numbered_dialog_over_running_session() -> None:
     assert st.dialog is not None
     assert st.dialog.title == "Teach auto mode about your environment?"
     assert st.dialog.options == ["1. Yes", "2. Not now", "3. Don't show again"]
-    assert st.rc_url == "https://claude.ai/code/session_01RMsXTCpV6y6oBpE3UFnCMQ"
+    assert st.rc_url == "https://claude.ai/code/session_01TestTestTestTestTestTe"
 
 
 @pytest.mark.unit
@@ -291,7 +291,7 @@ def test_parse_running_idle_and_busy() -> None:
 
 @pytest.mark.unit
 def test_parse_exited_and_starting_and_login() -> None:
-    st = lp.parse_pane(RUNNING_PANE + "\n[rc-launcher] claude exited (1)\nlishuyu@mini ~ %\n")
+    st = lp.parse_pane(RUNNING_PANE + "\n[rc-launcher] claude exited (1)\nyou@host ~ %\n")
     assert (st.state, st.exit_code) == ("exited", 1)
     assert lp.parse_pane("").state == "starting"
     assert lp.parse_pane("Select login method:\n ❯ 1. Claude account\n").state == "needs-login"
@@ -356,7 +356,7 @@ def test_watch_step_accepts_trust_once_then_saves_rc_url(app: lp.RCLauncher, run
     assert app.watch_step("alpha", flags) is True
     sess = app.list_sessions()[0]
     assert sess["state"] == "running"
-    assert sess["rc_url"].endswith("session_01RMsXTCpV6y6oBpE3UFnCMQ")
+    assert sess["rc_url"].endswith("session_01TestTestTestTestTestTe")
 
 
 @pytest.mark.unit

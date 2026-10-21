@@ -124,6 +124,7 @@ class Config:
             allowed_logins=frozenset(_split(env.get("RC_LAUNCHER_ALLOWED_LOGINS", ""), ",")),
             public_hosts=frozenset(h.lower() for h in _split(env.get("RC_LAUNCHER_PUBLIC_HOSTS", ""), ",")),
             ghostty_app=env.get("RC_LAUNCHER_GHOSTTY_APP", base.ghostty_app),
+            open_bin=env.get("RC_LAUNCHER_OPEN", base.open_bin),
             tmux_bin=which("tmux", "RC_LAUNCHER_TMUX"),
             claude_bin=which("claude", "RC_LAUNCHER_CLAUDE"),
             socket=env.get("RC_LAUNCHER_TMUX_SOCKET", base.socket),

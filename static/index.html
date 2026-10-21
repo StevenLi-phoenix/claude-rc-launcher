@@ -35,6 +35,7 @@
   }
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
@@ -59,6 +60,7 @@ header { display: flex; align-items: center; gap: 12px; margin: 4px 0 20px; }
 .dot.off { background: var(--bad); }
 
 .grid { display: grid; gap: 20px; }
+.grid > section { min-width: 0; }
 @media (min-width: 920px) { .grid { grid-template-columns: minmax(0, 5fr) minmax(0, 6fr); align-items: start; } .pad { position: sticky; top: 16px; } }
 
 h2 { font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-3); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
@@ -240,6 +242,7 @@ const T = {
       plan: "Read-only planning until you approve.", bypassPermissions: "No permission checks at all. Only for code you trust.",
       manual: "Asks before every action. Hard to answer from a phone." },
     login: "Run claude once on the Mac and log in.", exitCode: c => `claude exited with code ${c}`,
+    used: t => `${t} ago`, edited: t => `edited ${t} ago`,
     ago: s => s < 60 ? `${s|0}s` : s < 3600 ? `${(s/60)|0}m` : s < 86400 ? `${(s/3600)|0}h ${((s%3600)/60)|0}m` : `${(s/86400)|0}d`,
   },
   zh: {
@@ -259,16 +262,25 @@ const T = {
       plan: "只读规划，你批准后才动手。", bypassPermissions: "完全不做权限检查，只用于你信任的代码。",
       manual: "每一步都要确认，在手机上很难应付。" },
     login: "在 Mac 上先跑一次 claude 并登录。", exitCode: c => `claude 退出，代码 ${c}`,
+    used: t => `${t}前用过`, edited: t => `${t}前改动`,
     ago: s => s < 60 ? `${s|0} 秒` : s < 3600 ? `${(s/60)|0} 分` : s < 86400 ? `${(s/3600)|0} 时 ${((s%3600)/60)|0} 分` : `${(s/86400)|0} 天`,
   },
 };
-const L = (navigator.language || "en").toLowerCase().startsWith("zh") ? T.zh : T.en;
+const LANG = new URLSearchParams(location.search).get("lang") || navigator.language || "en"; // ?lang=en|zh forces one
+const L = LANG.toLowerCase().startsWith("zh") ? T.zh : T.en;
 document.documentElement.lang = L === T.zh ? "zh-CN" : "en";
 const $ = id => document.getElementById(id);
 const store = {
   get(k, d) { try { const v = localStorage.getItem("rcl." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
   set(k, v) { try { localStorage.setItem("rcl." + k, JSON.stringify(v)); } catch {} },
 };
+function shortPath(p) {
+  p = p || "";
+  const home = p.replace(/^\/Users\/[^/]+/, "~");
+  if (home !== p) return home;
+  const parts = p.split("/").filter(Boolean);
+  return parts.length > 2 ? "…/" + parts.slice(-2).join("/") : p;
+}
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function setText(e, v) { v = v == null ? "" : String(v); if (e.textContent !== v) e.textContent = v; }
 function setHTMLText(e, html) { if (e.innerHTML !== html) e.innerHTML = html; } // only for our own static strings
@@ -300,7 +312,8 @@ function renderChips() {
   box.replaceChildren(...(list.length ? list.map(p => {
     const b = el("button", "chip" + (p.last_used ? " recent" : ""));
     b.type = "button"; b.setAttribute("aria-pressed", String(p.path === S.selected)); b.title = p.path;
-    b.append(el("span", "n", p.name), el("span", "m", p.last_used ? L.ago(now - p.last_used) : p.path.replace(/^\/Users\/[^/]+/, "~")));
+    const meta = p.last_used ? L.used(L.ago(now - p.last_used)) : p.mtime ? L.edited(L.ago(now - p.mtime)) : shortPath(p.path);
+    b.append(el("span", "n", p.name), el("span", "m", meta));
     b.onclick = () => { S.selected = p.path === S.selected ? null : p.path; store.set("selected", S.selected); renderChips(); renderLaunch(); };
     return b;
   }) : [el("div", "empty-chips", L.noProjects)]));
@@ -347,6 +360,7 @@ async function loadProjects() {
     S.projects = d.projects; S.modes = d.modes; S.defaultMode = d.default_mode;
     if (!S.modes.includes(S.mode)) S.mode = d.default_mode;
     if (S.selected && !S.projects.some(p => p.path === S.selected)) S.selected = null;
+    if (!S.selected && S.projects[0] && S.projects[0].last_used) S.selected = S.projects[0].path; // one tap relaunches the latest
     renderChips(); renderModes(); renderLaunch();
   } catch (e) { toast(e.message, true); }
 }
@@ -394,7 +408,7 @@ function update(c, s, force) {
   setText(c.age, s.created ? L.ago(Date.now() / 1000 - s.created) : "");
   if (!force && c.key === key) return;
   c.key = key;
-  const dir = (s.dir || "").replace(/^\/Users\/[^/]+/, "~");
+  const dir = shortPath(s.dir);
   c.where.replaceChildren(el("b", "", dir), document.createTextNode(s.mode ? `  ·  ${s.mode}` : ""));
   const err = s.error || (st === "needs-login" ? L.login : st === "exited" && s.exit_code ? L.exitCode(s.exit_code) : "");
   c.err.hidden = !err; setText(c.err, err);
