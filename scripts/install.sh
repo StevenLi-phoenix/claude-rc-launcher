@@ -64,17 +64,24 @@ log "python: $("$PY" --version)"
 # So: let Ghostty read the system TCC database (readable only with FDA), then open the right pane
 # and check again until it is on.
 probe_fda() {
-  local out
+  local out check
   out=$(mktemp -t rc-launcher-fda)
+  check=$(mktemp -t rc-launcher-fda-check)
+  cat >"$check" <<EOF
+if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'
+sleep 1
+EOF
+  # One --initial-command option rather than -e: AppKit offers positional arguments that name existing files
+  # to Ghostty as documents, and Ghostty answers each with an "Allow Ghostty to execute …?" alert.
   open -na "$GHOSTTY" --args --title="claude-rc · permission check" --quit-after-last-window-closed=true \
-    --window-save-state=never --auto-update=off --confirm-close-surface=false --abnormal-command-exit-runtime=0 -e /bin/bash -c \
-    "if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'; sleep 1"
+    --window-save-state=never --auto-update=off --confirm-close-surface=false --abnormal-command-exit-runtime=0 \
+    --shell-integration=none "--initial-command=shell:/bin/bash $check"
   for _ in $(seq 1 30); do
     [[ -s $out ]] && break
     sleep 0.5
   done
   cat "$out" 2>/dev/null || true
-  rm -f "$out"
+  rm -f "$out" "$check"
 }
 if ((SKIP_FDA == 0)); then
   for attempt in 1 2 3 4; do

@@ -39,7 +39,7 @@ PANES = {
   /remote-control is active · Continue here, on your phone, or at {URL.format(1)}
 
 ⏺ Reading tests/checkout.spec.ts…
-⏺ Bash(pnpm test checkout --repeat 20)
+⏺ Bash(pnpm vitest run tests/checkout.spec.ts --repeat 20 --reporter=verbose --pool=forks --poolOptions.forks.singleFork=true 2>&1 | tail -40)
   ⎿  19 passed, 1 failed: timeout waiting for #pay-button
 
 ✻ Investigating the race in useCart()… (esc to interrupt)
