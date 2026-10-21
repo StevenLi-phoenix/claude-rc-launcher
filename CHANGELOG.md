@@ -2,6 +2,25 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and the project uses [Semantic Versioning](https://semver.org/).
 
+## [0.3.0] - 2026-10-21
+
+### Added
+- The search box takes paths (`~` expanded) and plain new names. A chip shows where the text lands: an existing folder, a new folder under the first root, or outside the allowed folders.
+- Launching into a folder that doesn't exist creates it (`mkdir -p`), but only when it lands inside the allowed roots; the toast says so. A new folder never gets `--continue`.
+- `GET /api/resolve?dir=` reports where a path lands and whether it exists; `/api/projects` also returns `home` and `roots`.
+- Refused POSTs are logged with the reason.
+
+### Changed
+- Ghostty gets the tmux command as one `--initial-command=shell:…` option (plus `--shell-integration=none`, which `-e` implied) instead of after `-e`. The installer's Full Disk Access check launches the same way.
+- Path errors name the expanded path, so `~/Codes/x` reads as `/Users/you/Codes/x`.
+
+### Removed
+- The "Other folder" field in Options; type the path in the search box instead.
+
+### Fixed
+- Every launch raised Ghostty's modal "Allow Ghostty to execute …?" alert: AppKit handed the tmux binary and `run.sh` to Ghostty as documents to open.
+- Session cards spilled out of their column when the terminal had a long line (the age, Stop button, terminal and attach command overflowed and the page scrolled sideways). The terminal now scrolls inside the card.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added
