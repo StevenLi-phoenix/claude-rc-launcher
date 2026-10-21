@@ -218,7 +218,8 @@ def test_ghostty_argv(cfg: lp.Config, roots: Path) -> None:
         "/s/run.sh",
     ]
     assert "--quit-after-last-window-closed=true" in argv[:e]
-    assert "--auto-update=off" in argv[:e]
+    for flag in ("--auto-update=off", "--confirm-close-surface=false", "--abnormal-command-exit-runtime=0"):
+        assert flag in argv[:e]
 
 
 @pytest.mark.integration
