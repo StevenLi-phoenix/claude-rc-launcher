@@ -195,6 +195,45 @@ def test_resolve_project_rejects_relative(cfg: lp.Config) -> None:
 
 
 @pytest.mark.unit
+def test_paths_expand_tilde(cfg: lp.Config, roots: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(roots.parent))
+    assert lp.resolve_project(cfg, "~/Codes/alpha") == (roots / "alpha").resolve()
+    assert lp.locate_project(cfg, " ~/Codes/new-thing/ ") == ((roots / "new-thing").resolve(), False)
+    with pytest.raises(lp.BadRequest, match=str(roots / "missing")):  # errors name the expanded path, not ~
+        lp.resolve_project(cfg, "~/Codes/missing")
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("rel", ["fresh", "fresh/deep/er", "gamma/sub-in-symlink-target", "alpha/../made-here"])
+def test_resolve_project_creates_missing_folders_inside_roots(cfg: lp.Config, roots: Path, rel: str) -> None:
+    path = roots / rel
+    real, exists = lp.locate_project(cfg, str(path))
+    assert not exists and not real.exists()  # locating never touches the disk
+    with pytest.raises(lp.BadRequest, match="does not exist"):
+        lp.resolve_project(cfg, str(path))
+    assert lp.resolve_project(cfg, str(path), create=True) == real
+    assert real.is_dir() and lp.locate_project(cfg, str(path)) == (real, True)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "rel", ["../outside/new", "../elsewhere", "notes.txt/sub", "new/../../outside/x", "alpha/../../outside/x"]
+)
+def test_resolve_project_never_creates_outside_roots(cfg: lp.Config, roots: Path, rel: str) -> None:
+    before = sorted(p for p in roots.parent.rglob("*"))
+    with pytest.raises(lp.BadRequest):
+        lp.resolve_project(cfg, str(roots / rel), create=True)
+    assert sorted(p for p in roots.parent.rglob("*")) == before
+
+
+@pytest.mark.unit
+def test_projects_skip_history_folders_that_are_gone(app: lp.RCLauncher, roots: Path) -> None:
+    app.history.touch(str(roots / "deleted-since"))
+    assert "deleted-since" not in {p["name"] for p in app.projects()}
+    assert not (roots / "deleted-since").exists()  # listing must not bring it back
+
+
+@pytest.mark.unit
 def test_projects_lists_dirs_recent_first(app: lp.RCLauncher, roots: Path) -> None:
     app.history.touch(str((roots / "beta").resolve()))
     names = [p["name"] for p in app.projects()]
@@ -207,24 +246,26 @@ def test_projects_lists_dirs_recent_first(app: lp.RCLauncher, roots: Path) -> No
 
 @pytest.mark.unit
 def test_ghostty_argv(cfg: lp.Config, roots: Path) -> None:
-    argv = lp.ghostty_argv(cfg, "rc-alpha", roots / "alpha", Path("/s/run.sh"), "alpha")
+    work = roots / "my project"
+    argv = lp.ghostty_argv(cfg, "rc-alpha", work, Path("/s/run.sh"), "alpha")
     assert argv[:4] == ["/usr/bin/open", "-na", "/Applications/Ghostty.app", "--args"]
-    e = argv.index("-e")
-    assert argv[e + 1 :] == [
-        "/opt/homebrew/bin/tmux",
-        "-L",
-        "claude-rc",
-        "new-session",
-        "-A",
-        "-s",
-        "rc-alpha",
-        "-c",
-        str(roots / "alpha"),
-        "/s/run.sh",
-    ]
-    assert "--quit-after-last-window-closed=true" in argv[:e]
-    for flag in ("--auto-update=off", "--confirm-close-surface=false", "--abnormal-command-exit-runtime=0"):
-        assert flag in argv[:e]
+    assert argv[-1] == (
+        f"--initial-command=shell:/opt/homebrew/bin/tmux -L claude-rc new-session -A -s rc-alpha -c '{work}' /s/run.sh"
+    )
+    for flag in ("--quit-after-last-window-closed=true", "--auto-update=off", "--confirm-close-surface=false",
+                 "--abnormal-command-exit-runtime=0", "--shell-integration=none"):  # fmt: skip
+        assert flag in argv
+    # every argument after --args is an option: AppKit would offer a positional path to Ghostty as a
+    # document, and Ghostty answers each one with an "Allow Ghostty to execute …?" alert
+    assert all(a.startswith("--") for a in argv[4:])
+
+
+@pytest.mark.unit
+def test_reap_still_recognises_the_initial_command_form(app: lp.RCLauncher, runner: FakeRunner, roots: Path) -> None:
+    argv = lp.ghostty_argv(app.cfg, "rc-gone", roots / "alpha", Path("/s/run.sh"), "gone")
+    exe = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
+    runner.ps_out = f"  4242 01:00:00 {exe} {' '.join(argv[4:])}\n"
+    assert app._ghostty_instances() == [(4242, 3600, "rc-gone")]
 
 
 @pytest.mark.integration
@@ -336,7 +377,8 @@ def test_start_writes_files_and_opens_ghostty(
     assert "--permission-mode plan" in (sdir / "run.sh").read_text()
     assert os.access(sdir / "run.sh", os.X_OK)
     opens = [c for c in runner.calls if c[0].endswith("open")]
-    assert len(opens) == 1 and opens[0][-1] == str(sdir / "run.sh")
+    assert len(opens) == 1 and opens[0][-1].endswith(f" {sdir / 'run.sh'}")
+    assert meta["new_dir"] is False
     assert app.list_sessions()[0]["state"] == "launching"
 
 
@@ -558,15 +600,12 @@ def test_project_slug(path: str, slug: str) -> None:
 
 
 @pytest.mark.unit
-def test_scratch_dir_is_created_on_demand_and_allowed(cfg: lp.Config) -> None:
+def test_scratch_dir_is_created_on_launch_and_allowed(app: lp.RCLauncher, cfg: lp.Config) -> None:
     assert cfg.scratch is not None and not cfg.scratch.exists()
-    assert lp.resolve_project(cfg, str(cfg.scratch)) == cfg.scratch.resolve()
+    assert lp.locate_project(cfg, str(cfg.scratch)) == (cfg.scratch.resolve(), False)
+    app.start({"dir": str(cfg.scratch)})
     assert cfg.scratch.is_dir()
-    sub = cfg.scratch / "notes"
-    sub.mkdir()
-    assert lp.resolve_project(cfg, str(sub)) == sub.resolve()
-    with pytest.raises(lp.BadRequest):  # only the scratch dir itself is auto-created
-        lp.resolve_project(cfg, str(cfg.scratch / "missing"))
+    assert lp.resolve_project(cfg, str(cfg.scratch / "notes"), create=True) == (cfg.scratch / "notes").resolve()
 
 
 @pytest.mark.unit
@@ -619,6 +658,18 @@ def test_start_with_model_and_resume(app: lp.RCLauncher, cfg: lp.Config, roots: 
 def test_start_rejects_bad_model_or_resume(app: lp.RCLauncher, roots: Path, extra: dict) -> None:
     with pytest.raises(lp.BadRequest):
         app.start({"dir": str(roots / "alpha"), **extra})
+    with pytest.raises(lp.BadRequest):  # a refused launch leaves no new folder behind
+        app.start({"dir": str(roots / "not-yet"), **extra})
+    assert not (roots / "not-yet").exists()
+
+
+@pytest.mark.unit
+def test_start_creates_a_missing_folder(app: lp.RCLauncher, runner: FakeRunner, cfg: lp.Config, roots: Path) -> None:
+    meta = app.start({"dir": str(roots / "brand-new"), "continue": True})
+    assert (roots / "brand-new").is_dir()
+    assert (meta["name"], meta["new_dir"], meta["continue"]) == ("brand-new", True, False)
+    assert "--continue" not in (cfg.state_dir / "sessions" / "brand-new" / "run.sh").read_text()
+    assert str((roots / "brand-new").resolve()) in {p["path"] for p in app.projects()}
 
 
 @pytest.mark.integration
@@ -628,3 +679,20 @@ def test_http_conversations(server: str, cfg: lp.Config, roots: Path) -> None:
     status, body = call(f"{server}/api/conversations?dir={work}")
     assert status == 200 and [c["id"] for c in body["conversations"]] == [SID]
     assert call(server + "/api/conversations?dir=/etc")[0] == 400
+    assert call(f"{server}/api/conversations?dir={roots / 'not-yet'}") == (200, {"conversations": []})
+
+
+@pytest.mark.integration
+def test_http_resolve_and_create(server: str, roots: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HOME", str(roots.parent))
+    status, body = call(server + "/api/projects")
+    assert status == 200 and body["home"] == str(roots.parent) and body["roots"] == [str(roots)]
+    assert call(server + "/api/resolve?dir=~/Codes/alpha") == (200, {"path": str((roots / "alpha").resolve()),
+                                                                      "exists": True})  # fmt: skip
+    new = (roots / "new-repo").resolve()
+    assert call(server + "/api/resolve?dir=~/Codes/new-repo") == (200, {"path": str(new), "exists": False})
+    assert not new.exists()
+    status, body = call(server + "/api/resolve?dir=~/elsewhere")
+    assert status == 400 and "outside the allowed roots" in body["error"]
+    status, body = call(server + "/api/start", "POST", {"dir": "~/Codes/new-repo"})
+    assert status == 200 and body["new_dir"] is True and body["dir"] == str(new) and new.is_dir()

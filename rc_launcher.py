@@ -180,24 +180,46 @@ def is_scratch(cfg: Config, path: Path) -> bool:
     return cfg.scratch is not None and path.resolve() == cfg.scratch.resolve()
 
 
-def resolve_project(cfg: Config, raw: Any, create_scratch: bool = True) -> Path:
+def locate_project(cfg: Config, raw: Any) -> tuple[Path, bool]:
+    """Real path of the folder `raw` names (`~` expanded) and whether it exists yet. A missing folder is
+    judged by its nearest existing ancestor, so it can only ever be created inside the allowed roots."""
     if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
         raise BadRequest("dir is required")
     path = Path(os.path.expanduser(raw.strip()))
     if not path.is_absolute():
-        raise BadRequest("dir must be an absolute path")
-    if create_scratch and is_scratch(cfg, path):  # /tmp is wiped on reboot; recreate the scratch dir on use
-        path.mkdir(parents=True, exist_ok=True)
-        if path.resolve().stat().st_uid != os.getuid():
-            raise BadRequest(f"{raw} belongs to another user")
+        raise BadRequest("dir must be an absolute path or start with ~")
+    missing: list[str] = []
+    anchor = path
     try:
-        real = path.resolve(strict=True)
-    except (FileNotFoundError, RuntimeError) as exc:
-        raise BadRequest(f"{raw} does not exist") from exc
+        while not anchor.exists():
+            missing.insert(0, anchor.name)
+            anchor = anchor.parent
+        real = anchor.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise BadRequest(f"{path} can't be read: {exc}") from exc
+    if ".." in missing:
+        raise BadRequest(f"{path}: '..' must not follow a folder that doesn't exist")
     if not real.is_dir():
-        raise BadRequest(f"{raw} is not a directory")
+        raise BadRequest(f"{anchor} is not a directory")
+    real = real.joinpath(*missing)
     if not any(real == b or b in real.parents for b in allowed_bases(cfg)):
-        raise BadRequest(f"{raw} is outside the allowed roots")
+        raise BadRequest(f"{path} is outside the allowed roots")
+    return real, not missing
+
+
+def resolve_project(cfg: Config, raw: Any, create: bool = False) -> Path:
+    """The project folder `raw` names; with `create`, a missing one is made (mkdir -p) first."""
+    real, exists = locate_project(cfg, raw)
+    if not exists:
+        if not create:
+            raise BadRequest(f"{real} does not exist")
+        try:
+            real.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise BadRequest(f"can't create {real}: {exc.strerror or exc}") from exc
+        log.info("created project folder %s", real)
+    if is_scratch(cfg, real) and real.stat().st_uid != os.getuid():  # /tmp is shared with other users
+        raise BadRequest(f"{real} belongs to another user")
     return real
 
 
@@ -294,7 +316,14 @@ def list_conversations(cfg: Config, workdir: Path, limit: int = 20) -> list[dict
 
 def ghostty_argv(cfg: Config, tmux_name: str, workdir: Path, script: Path, title: str) -> list[str]:
     """`open -n` starts a separate Ghostty instance per session: no Apple Events, so no TCC prompt
-    for this daemon, and the instance quits once its window closes (the tmux session lives on)."""
+    for this daemon, and the instance quits once its window closes (the tmux session lives on).
+
+    The tmux command travels as a single --initial-command option, not after `-e`: AppKit hands every
+    positional argument that names an existing file (the tmux binary, run.sh) to the app as a document
+    to open, and Ghostty 1.2+ answers each with a modal "Allow Ghostty to execute …?" alert. A `shell:`
+    command runs as `/bin/sh -c "exec -l <command>"`, so the string has to start with the binary."""
+    tmux = shlex.join([cfg.tmux_bin, "-L", cfg.socket, "new-session", "-A", "-s", tmux_name,
+                       "-c", str(workdir), str(script)])  # fmt: skip
     return [
         cfg.open_bin, "-na", cfg.ghostty_app, "--args",
         f"--title=claude-rc · {title}",
@@ -303,8 +332,8 @@ def ghostty_argv(cfg: Config, tmux_name: str, workdir: Path, script: Path, title
         "--confirm-close-surface=false",
         "--abnormal-command-exit-runtime=0",  # with the line above: a fast exit still closes the instance
         "--auto-update=off",  # otherwise Sparkle's update prompt keeps the instance alive after the window closes
-        "-e", cfg.tmux_bin, "-L", cfg.socket, "new-session", "-A", "-s", tmux_name,
-        "-c", str(workdir), str(script),
+        "--shell-integration=none",  # what `-e` used to imply: tmux is not a shell to integrate with
+        f"--initial-command=shell:{tmux}",
     ]  # fmt: skip
 
 
@@ -589,7 +618,7 @@ class RCLauncher:
                     {"name": child.name, "path": real, "last_used": used.get(real, 0.0),
                      "mtime": child.stat().st_mtime, "git": (child / ".git").exists()}
                 )  # fmt: skip
-        for path, ts in used.items():  # custom paths launched before, if still allowed
+        for path, ts in used.items():  # custom paths launched before, if still there and allowed
             if path not in seen:
                 try:
                     real = str(resolve_project(self.cfg, path))
@@ -618,7 +647,7 @@ class RCLauncher:
         raise BadRequest("too many sessions with this name")
 
     def start(self, req: Mapping[str, Any]) -> dict[str, Any]:
-        workdir = resolve_project(self.cfg, req.get("dir"))
+        workdir, existed = locate_project(self.cfg, req.get("dir"))  # created below, once the rest checks out
         mode = req.get("mode") or self.cfg.default_mode
         if mode not in MODES:
             raise BadRequest(f"mode must be one of {', '.join(MODES)}")
@@ -635,7 +664,8 @@ class RCLauncher:
                 raise BadRequest("resume must be a session id")
             if tdir is None or not (tdir / f"{resume}.jsonl").is_file():
                 raise BadRequest("no such conversation in this folder")
-        cont = bool(req.get("continue")) and resume is None
+        cont = bool(req.get("continue")) and resume is None and existed  # a new folder has nothing to continue
+        workdir = resolve_project(self.cfg, str(workdir), create=True)
         default_name = "tmp" if is_scratch(self.cfg, workdir) else workdir.name
         raw_name = req.get("name") if isinstance(req.get("name"), str) and req.get("name") else default_name
         with self.lock:
@@ -662,7 +692,7 @@ class RCLauncher:
             script.chmod(0o700)
             meta = {
                 "name": name, "tmux": SESSION_PREFIX + name, "dir": str(workdir), "mode": mode,
-                "continue": cont, "model": model, "resume": resume, "prompt": bool(prompt),
+                "continue": cont, "model": model, "resume": resume, "prompt": bool(prompt), "new_dir": not existed,
                 "created": self.clock(), "seen": False, "rc_url": None, "failed": None,
             }  # fmt: skip
             self._save(meta)
@@ -932,14 +962,17 @@ def make_handler(app: RCLauncher) -> type[BaseHTTPRequestHandler]:
                 return self._json(
                     200,
                     {"projects": app.projects(), "modes": MODES, "default_mode": cfg.default_mode,
-                     "models": cfg.models},
+                     "models": cfg.models, "home": str(Path.home()),
+                     "roots": [str(r) for r in cfg.roots if r.is_dir()]},
                 )  # fmt: skip
-            if path == "/api/conversations":
+            if path in ("/api/conversations", "/api/resolve"):
                 raw = (parse_qs(urlsplit(self.path).query).get("dir") or [""])[0]
                 try:
-                    workdir = resolve_project(cfg, raw, create_scratch=False)
+                    workdir, exists = locate_project(cfg, raw)
                 except BadRequest as exc:
                     return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                if path == "/api/resolve":  # what a typed path means: where it lands and whether launching creates it
+                    return self._json(200, {"path": str(workdir), "exists": exists})
                 return self._json(200, {"conversations": list_conversations(cfg, workdir)})
             if path == "/api/sessions":
                 return self._json(
@@ -973,6 +1006,7 @@ def make_handler(app: RCLauncher) -> type[BaseHTTPRequestHandler]:
                     return self._json(200, {"ok": True})
                 return self._error(HTTPStatus.NOT_FOUND, "not found")
             except BadRequest as exc:
+                log.warning("refused POST %s: %s", path, exc)
                 return self._error(HTTPStatus.BAD_REQUEST, str(exc))
             except NotFound as exc:
                 return self._error(HTTPStatus.NOT_FOUND, f"no session {exc}")
