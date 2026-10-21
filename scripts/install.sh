@@ -59,13 +59,14 @@ log "python: $("$PY" --version)"
 # --- Full Disk Access for Ghostty ------------------------------------------------------------
 # Sessions run inside Ghostty and inherit its privacy grants. macOS has no prompt for Full Disk
 # Access, but an app that touches FDA-protected data gets listed (switched off) in System Settings.
-# So: let Ghostty touch it, then open the right pane and check again until it is on.
+# So: let Ghostty read the system TCC database (readable only with FDA), then open the right pane
+# and check again until it is on.
 probe_fda() {
   local out
   out=$(mktemp -t launchpad-fda)
   open -na "$GHOSTTY" --args --title="launchpad · permission check" --quit-after-last-window-closed=true \
     --window-save-state=never -e /bin/bash -c \
-    "if ls \"\$HOME/Library/Application Support/com.apple.TCC\" >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'"
+    "if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'"
   for _ in $(seq 1 30); do
     [[ -s $out ]] && break
     sleep 0.5
