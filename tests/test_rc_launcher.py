@@ -494,3 +494,16 @@ def test_reap_only_our_orphaned_old_instances(app: lp.RCLauncher, runner: FakeRu
     app.kill = lambda pid, sig: killed.append(pid)
     app.list_sessions()
     assert killed == [104]
+
+
+@pytest.mark.unit
+def test_reap_instance_of_an_earlier_session_with_the_same_name(app: lp.RCLauncher, runner: FakeRunner) -> None:
+    g = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
+    sig = "-e /opt/homebrew/bin/tmux -L claude-rc new-session -A -s rc-reused -c /x /s/run.sh"
+    runner.live["rc-reused"] = RUNNING_PANE  # FakeRunner reports it created at 1792600000
+    app.clock = lambda: 1792600000 + 60
+    runner.ps_out = f"  201  05:00 {g} --title=a {sig}\n  202  01:01 {g} --title=b {sig}"
+    killed: list[int] = []
+    app.kill = lambda pid, sig: killed.append(pid)
+    app.list_sessions()
+    assert killed == [201]

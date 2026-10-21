@@ -613,9 +613,14 @@ class RCLauncher:
     def reap(self, live: Mapping[str, Any]) -> None:
         """Quit Ghostty instances whose tmux session is gone. Ghostty normally quits by itself once its
         window closes, but a leftover panel can keep an instance alive, which would pile up one per launch.
-        Only instances older than the launch timeout are touched, so a session still starting is safe."""
+        Only instances older than the launch timeout are touched, so a session still starting is safe. A name
+        can be reused after a session ends, so an instance much older than the live session of that name
+        belongs to the earlier one."""
+        now = self.clock()
         for pid, age, tname in self._ghostty_instances():
-            if tname not in live and age > self.cfg.launch_timeout:
+            session = live.get(tname)
+            stale = session is None or now - age < session["created"] - 10
+            if stale and age > self.cfg.launch_timeout:
                 log.info("reap Ghostty pid %s: its session %s is gone", pid, tname)
                 try:
                     self.kill(pid, signal.SIGTERM)
