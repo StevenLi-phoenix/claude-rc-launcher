@@ -12,6 +12,8 @@
 #   RC_LAUNCHER_ROOTS           colon-separated project roots (default ~/Codes)
 #   RC_LAUNCHER_HOST_LABEL      machine name shown in the page header (default: short hostname)
 #   RC_LAUNCHER_DEFAULT_MODE    default permission mode (default auto)
+#   RC_LAUNCHER_SCRATCH         throwaway working dir offered first (default /tmp/temp; empty = off)
+#   RC_LAUNCHER_MODELS          comma-separated models offered (default fable,opus,sonnet,haiku)
 #   RC_LAUNCHER_PORT            local port (default 8795)
 #   RC_LAUNCHER_LABEL           LaunchAgent label (default app.claude-rc-launcher)
 set -euo pipefail
@@ -104,9 +106,11 @@ env = {
     "RC_LAUNCHER_PORT": os.environ["PORT"],
 }
 for key in ("RC_LAUNCHER_ALLOWED_LOGINS", "RC_LAUNCHER_PUBLIC_HOSTS", "RC_LAUNCHER_ROOTS", "RC_LAUNCHER_HOST_LABEL",
-            "RC_LAUNCHER_DEFAULT_MODE"):
+            "RC_LAUNCHER_DEFAULT_MODE", "RC_LAUNCHER_MODELS"):
     if os.environ.get(key):
         env[key] = os.environ[key]
+if "RC_LAUNCHER_SCRATCH" in os.environ:  # an empty value is meaningful: it turns the scratch dir off
+    env["RC_LAUNCHER_SCRATCH"] = os.environ["RC_LAUNCHER_SCRATCH"]
 plist = {
     "Label": os.environ["LABEL"],
     "ProgramArguments": [os.environ["PY"], os.path.join(os.environ["REPO"], "rc_launcher.py")],

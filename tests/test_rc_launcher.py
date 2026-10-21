@@ -138,6 +138,8 @@ def cfg(tmp_path: Path, roots: Path) -> lp.Config:
         allowed_logins=frozenset({"me@example.com"}),
         public_hosts=frozenset({"claude-rc.example.ts.net"}),
         launch_timeout=45.0,
+        scratch=tmp_path / "scratch",
+        claude_home=tmp_path / "claude",
     )
 
 
@@ -196,8 +198,8 @@ def test_resolve_project_rejects_relative(cfg: lp.Config) -> None:
 def test_projects_lists_dirs_recent_first(app: lp.RCLauncher, roots: Path) -> None:
     app.history.touch(str((roots / "beta").resolve()))
     names = [p["name"] for p in app.projects()]
-    assert names[0] == "beta"
-    assert set(names) == {"alpha", "beta", "gamma"}
+    assert names[:2] == ["tmp", "beta"]  # the scratch dir is pinned first, then most recent
+    assert set(names) == {"tmp", "alpha", "beta", "gamma"}
 
 
 # --------------------------------------------------------------------------- launch commands
@@ -226,8 +228,11 @@ def test_ghostty_argv(cfg: lp.Config, roots: Path) -> None:
 
 
 @pytest.mark.integration
-@pytest.mark.parametrize("cont", [False, True])
-def test_run_script_passes_args_verbatim(tmp_path: Path, cont: bool) -> None:
+@pytest.mark.parametrize(
+    ("cont", "model", "resume"),
+    [(False, None, None), (True, "opus", None), (True, None, "0b9a4d38-1c2e-4f5a-9b6c-7d8e9f0a1b2c")],
+)
+def test_run_script_passes_args_verbatim(tmp_path: Path, cont: bool, model: str | None, resume: str | None) -> None:
     """Execute the generated script with stub claude/caffeinate and check the exact argv."""
     bindir = tmp_path / "bin"
     bindir.mkdir()
@@ -246,13 +251,25 @@ def test_run_script_passes_args_verbatim(tmp_path: Path, cont: bool) -> None:
     work.mkdir()
     cfg = lp.Config(claude_bin=str(bindir / "claude"), session_path=f"{bindir}:/usr/bin:/bin")
     script = lp.render_run_script(
-        cfg, workdir=work, name="alpha", mode="auto", cont=cont, prompt_file=prompt_file, keep_shell=False
+        cfg,
+        workdir=work,
+        name="alpha",
+        mode="auto",
+        cont=cont,
+        prompt_file=prompt_file,
+        keep_shell=False,
+        model=model,
+        resume=resume,
     )
     out = subprocess.run(["/bin/bash", "-c", script], check=False, capture_output=True, text=True, timeout=20)
     assert "[rc-launcher] claude exited (0)" in out.stdout, out.stderr
     got = json.loads(argv_file.read_text())
     expected = ["--remote-control=alpha", "--permission-mode", "auto"]
-    if cont:
+    if model:
+        expected += ["--model", model]
+    if resume:
+        expected += ["--resume", resume]  # resume wins over continue
+    elif cont:
         expected.append("--continue")
     assert got["argv"] == [*expected, prompt]
     assert Path(got["cwd"]).resolve() == work.resolve()
@@ -455,7 +472,8 @@ def test_http_post_csrf_guards(server: str, roots: Path, runner: FakeRunner, bad
 @pytest.mark.integration
 def test_http_start_list_stop(server: str, roots: Path, runner: FakeRunner) -> None:
     status, body = call(server + "/api/projects")
-    assert status == 200 and {p["name"] for p in body["projects"]} == {"alpha", "beta", "gamma"}
+    assert status == 200 and {p["name"] for p in body["projects"]} == {"tmp", "alpha", "beta", "gamma"}
+    assert body["models"] == ["fable", "opus", "sonnet", "haiku"]
     status, body = call(server + "/api/start", "POST", {"dir": str(roots / "beta")})
     assert status == 200 and body["name"] == "beta"
     assert call(server + "/api/start", "POST", {"dir": "/etc"})[0] == 400
@@ -508,3 +526,105 @@ def test_reap_instance_of_an_earlier_session_with_the_same_name(app: lp.RCLaunch
     app.kill = lambda pid, sig: killed.append(pid)
     app.list_sessions()
     assert killed == [201]
+
+
+# --------------------------------------------------------------------------- scratch dir, models, resume
+
+
+SID = "0b9a4d38-1c2e-4f5a-9b6c-7d8e9f0a1b2c"
+
+
+def write_transcript(cfg: lp.Config, workdir: Path, sid: str, records: list[dict], mtime: float) -> Path:
+    d = cfg.claude_home / "projects" / lp.project_slug(str(workdir))
+    d.mkdir(parents=True, exist_ok=True)
+    p = d / f"{sid}.jsonl"
+    p.write_text("".join(json.dumps(r) + "\n" for r in records))
+    os.utime(p, (mtime, mtime))
+    return p
+
+
+def user(text: str, meta: bool = False) -> dict:
+    return {"type": "user", "isMeta": meta, "message": {"role": "user", "content": text}}
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("path", "slug"),
+    [("/private/tmp/temp", "-private-tmp-temp"), ("/Users/x/Codes/translate_upload_yt", "-Users-x-Codes-translate-upload-yt"),
+     ("/a/b.c d", "-a-b-c-d")],
+)  # fmt: skip
+def test_project_slug(path: str, slug: str) -> None:
+    assert lp.project_slug(path) == slug
+
+
+@pytest.mark.unit
+def test_scratch_dir_is_created_on_demand_and_allowed(cfg: lp.Config) -> None:
+    assert cfg.scratch is not None and not cfg.scratch.exists()
+    assert lp.resolve_project(cfg, str(cfg.scratch)) == cfg.scratch.resolve()
+    assert cfg.scratch.is_dir()
+    sub = cfg.scratch / "notes"
+    sub.mkdir()
+    assert lp.resolve_project(cfg, str(sub)) == sub.resolve()
+    with pytest.raises(lp.BadRequest):  # only the scratch dir itself is auto-created
+        lp.resolve_project(cfg, str(cfg.scratch / "missing"))
+
+
+@pytest.mark.unit
+def test_scratch_config_from_env() -> None:
+    assert lp.Config.from_env({}).scratch == Path("/tmp/temp")
+    assert lp.Config.from_env({"RC_LAUNCHER_SCRATCH": ""}).scratch is None
+    assert lp.Config.from_env({"RC_LAUNCHER_MODELS": "opus, sonnet[1m]"}).models == ("opus", "sonnet[1m]")
+    with pytest.raises(SystemExit):
+        lp.Config.from_env({"RC_LAUNCHER_MODELS": "opus;rm -rf"})
+
+
+@pytest.mark.unit
+def test_scratch_session_is_named_tmp(app: lp.RCLauncher, cfg: lp.Config) -> None:
+    meta = app.start({"dir": str(cfg.scratch)})
+    assert meta["name"] == "tmp" and meta["dir"] == str(cfg.scratch.resolve())
+
+
+@pytest.mark.unit
+def test_conversations_titles_and_order(cfg: lp.Config, roots: Path) -> None:
+    work = (roots / "alpha").resolve()
+    write_transcript(cfg, work, SID, [user("<local-command-caveat>x", True), user("first real ask"),
+                                      {"type": "ai-title", "aiTitle": "ai name"},
+                                      {"type": "custom-title", "customTitle": "my name"}], 3000)  # fmt: skip
+    write_transcript(cfg, work, "11111111-2222-4333-8444-555555555555",
+                     [user("hello there"), {"type": "last-prompt", "lastPrompt": "latest ask"}], 2000)  # fmt: skip
+    write_transcript(cfg, work, "22222222-2222-4333-8444-555555555555", [user("only a prompt")], 1000)
+    write_transcript(cfg, work, "33333333-2222-4333-8444-555555555555", [{"type": "system"}], 4000)  # empty: skipped
+    (cfg.claude_home / "projects" / lp.project_slug(str(work)) / "agent-x.jsonl").write_text("{}\n")  # not a session
+    convs = lp.list_conversations(cfg, work)
+    assert [c["title"] for c in convs] == ["my name", "latest ask", "only a prompt"]
+    assert convs[0]["id"] == SID and convs[1]["prompt"] == "latest ask"
+    assert lp.list_conversations(cfg, (roots / "beta").resolve()) == []
+
+
+@pytest.mark.unit
+def test_start_with_model_and_resume(app: lp.RCLauncher, cfg: lp.Config, roots: Path) -> None:
+    work = (roots / "alpha").resolve()
+    write_transcript(cfg, work, SID, [user("hi")], 1000)
+    meta = app.start({"dir": str(work), "model": "opus", "resume": SID, "continue": True})
+    script = (cfg.state_dir / "sessions" / meta["name"] / "run.sh").read_text()
+    assert "args+=(--model opus)" in script and f"args+=(--resume {SID})" in script and "--continue" not in script
+    assert (meta["model"], meta["resume"], meta["continue"]) == ("opus", SID, False)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "extra",
+    [{"model": "gpt-9"}, {"resume": "not-a-uuid"}, {"resume": "99999999-2222-4333-8444-555555555555"}],
+)
+def test_start_rejects_bad_model_or_resume(app: lp.RCLauncher, roots: Path, extra: dict) -> None:
+    with pytest.raises(lp.BadRequest):
+        app.start({"dir": str(roots / "alpha"), **extra})
+
+
+@pytest.mark.integration
+def test_http_conversations(server: str, cfg: lp.Config, roots: Path) -> None:
+    work = (roots / "alpha").resolve()
+    write_transcript(cfg, work, SID, [user("hi")], 1000)
+    status, body = call(f"{server}/api/conversations?dir={work}")
+    assert status == 200 and [c["id"] for c in body["conversations"]] == [SID]
+    assert call(server + "/api/conversations?dir=/etc")[0] == 400

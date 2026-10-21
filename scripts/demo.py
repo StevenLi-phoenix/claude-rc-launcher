@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import tempfile
 import time
@@ -19,6 +20,12 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PROJECTS = ["web-app", "data-pipeline", "ios-client", "blog", "infra", "ml-experiments", "dotfiles", "notes-sync"]
 URL = "https://claude.ai/code/session_01DEMOdemoDEMOdemoDEMO{}"
+CONVERSATIONS = [
+    ("fix-flaky-checkout-test", "fix the flaky checkout test"),
+    ("migrate-auth-to-passkeys", "move login to passkeys, keep password fallback for a release"),
+    ("speed-up-ci-cache", "CI takes 14 minutes, find what to cache"),
+    ("dark-mode-polish", "the settings page looks off in dark mode"),
+]
 PROMPT_BOX = """
 ────────────────────────────────────────────────────────────────
 ❯
@@ -97,6 +104,15 @@ def main() -> None:
                 "prompt": True, "created": t, "seen": name != "blog", "rc_url": None, "failed": None}  # fmt: skip
         (sdir / "meta.json").write_text(json.dumps(meta))
     history = {str((roots / n).resolve()): now - i * 600 for i, n in enumerate(["web-app", "data-pipeline", "blog"])}
+    # earlier conversations in web-app, for the resume picker
+    tdir = tmp / "claude" / "projects" / re.sub(r"[^A-Za-z0-9]", "-", str((roots / "web-app").resolve()))
+    tdir.mkdir(parents=True)
+    for i, (title, ask) in enumerate(CONVERSATIONS):
+        f = tdir / f"{i:08d}-0000-4000-8000-000000000000.jsonl"
+        recs = [{"type": "user", "message": {"role": "user", "content": ask}}, {"type": "ai-title", "aiTitle": title},
+                {"type": "last-prompt", "lastPrompt": ask}]  # fmt: skip
+        f.write_text("".join(json.dumps(r) + "\n" for r in recs))
+        os.utime(f, (now - 3600 * (i * 7 + 2),) * 2)
     (tmp / "state" / "history.json").write_text(json.dumps(history))
     os.environ |= {
         "RC_LAUNCHER_PORT": port,
@@ -106,6 +122,8 @@ def main() -> None:
         "RC_LAUNCHER_CLAUDE": "/usr/bin/true",
         "RC_LAUNCHER_OPEN": "/usr/bin/true",
         "RC_LAUNCHER_HOST_LABEL": "studio",
+        "RC_LAUNCHER_SCRATCH": str(tmp / "scratch"),
+        "RC_LAUNCHER_CLAUDE_HOME": str(tmp / "claude"),
     }
     sys.path.insert(0, str(REPO))
     import rc_launcher

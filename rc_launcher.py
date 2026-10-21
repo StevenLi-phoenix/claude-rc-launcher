@@ -29,11 +29,14 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 log = logging.getLogger("rc-launcher")
 
 MODES = ("auto", "acceptEdits", "plan", "bypassPermissions", "manual")
+DEFAULT_MODELS = ("fable", "opus", "sonnet", "haiku")
+MODEL_RE = re.compile(r"^[A-Za-z0-9._\[\]-]{1,64}$")
+UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 SESSION_PREFIX = "rc-"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 RC_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
@@ -103,6 +106,12 @@ class Config:
     host_label: str = ""
     launch_timeout: float = 45.0
     watch_seconds: float = 180.0
+    # A throwaway working dir offered first in the project list, created on demand. None = not offered.
+    scratch: Path | None = Path("/tmp/temp")
+    # Models offered on the page (claude --model aliases or full names); "default" (no flag) is always offered.
+    models: tuple[str, ...] = DEFAULT_MODELS
+    # Where Claude Code keeps transcripts (projects/<slug>/<session-id>.jsonl), for the resume picker.
+    claude_home: Path = Path.home() / ".claude"
 
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Config:
@@ -116,6 +125,14 @@ class Config:
         if mode not in MODES:
             raise SystemExit(f"RC_LAUNCHER_DEFAULT_MODE must be one of {MODES}")
         roots = env.get("RC_LAUNCHER_ROOTS")
+        scratch_env = env.get("RC_LAUNCHER_SCRATCH")
+        if scratch_env is None:
+            scratch = base.scratch
+        else:
+            scratch = Path(os.path.expanduser(scratch_env.strip())) if scratch_env.strip() else None
+        models = tuple(_split(env["RC_LAUNCHER_MODELS"], ",")) if env.get("RC_LAUNCHER_MODELS") else base.models
+        if not all(MODEL_RE.match(m) for m in models):
+            raise SystemExit("RC_LAUNCHER_MODELS: model names may only use letters, digits and . _ - [ ]")
         return cls(
             port=int(env.get("RC_LAUNCHER_PORT", base.port)),
             bind=env.get("RC_LAUNCHER_BIND", base.bind),
@@ -131,6 +148,9 @@ class Config:
             default_mode=mode,
             session_path=path,
             host_label=env.get("RC_LAUNCHER_HOST_LABEL") or os.uname().nodename.split(".")[0],
+            scratch=scratch,
+            models=models,
+            claude_home=Path(os.path.expanduser(env.get("RC_LAUNCHER_CLAUDE_HOME", str(base.claude_home)))),
         )
 
 
@@ -145,7 +165,7 @@ def sanitize_name(raw: str) -> str:
 
 def allowed_bases(cfg: Config) -> list[Path]:
     """Roots plus the targets of symlinked root children (e.g. ~/Codes/x -> /Volumes/SSD/x)."""
-    bases: list[Path] = []
+    bases: list[Path] = [cfg.scratch.resolve()] if cfg.scratch is not None else []
     for root in cfg.roots:
         if not root.is_dir():
             continue
@@ -156,12 +176,20 @@ def allowed_bases(cfg: Config) -> list[Path]:
     return bases
 
 
-def resolve_project(cfg: Config, raw: Any) -> Path:
+def is_scratch(cfg: Config, path: Path) -> bool:
+    return cfg.scratch is not None and path.resolve() == cfg.scratch.resolve()
+
+
+def resolve_project(cfg: Config, raw: Any, create_scratch: bool = True) -> Path:
     if not isinstance(raw, str) or not raw.strip() or "\x00" in raw:
         raise BadRequest("dir is required")
     path = Path(os.path.expanduser(raw.strip()))
     if not path.is_absolute():
         raise BadRequest("dir must be an absolute path")
+    if create_scratch and is_scratch(cfg, path):  # /tmp is wiped on reboot; recreate the scratch dir on use
+        path.mkdir(parents=True, exist_ok=True)
+        if path.resolve().stat().st_uid != os.getuid():
+            raise BadRequest(f"{raw} belongs to another user")
     try:
         real = path.resolve(strict=True)
     except (FileNotFoundError, RuntimeError) as exc:
@@ -171,6 +199,94 @@ def resolve_project(cfg: Config, raw: Any) -> Path:
     if not any(real == b or b in real.parents for b in allowed_bases(cfg)):
         raise BadRequest(f"{raw} is outside the allowed roots")
     return real
+
+
+# --------------------------------------------------------------------------- earlier conversations (resume)
+
+
+def project_slug(path: str) -> str:
+    """Claude Code's transcript dir name for a working dir: every non-alphanumeric character becomes '-'."""
+    return re.sub(r"[^A-Za-z0-9]", "-", path)
+
+
+def transcripts_dir(cfg: Config, workdir: Path) -> Path | None:
+    base = cfg.claude_home / "projects"
+    slug = project_slug(str(workdir))
+    if (base / slug).is_dir():
+        return base / slug
+    if len(slug) > 200:  # Claude Code shortens very long slugs and appends a hash
+        matches = sorted(base.glob(glob_escape(slug[:200]) + "*"))
+        return matches[0] if matches else None
+    return None
+
+
+def glob_escape(text: str) -> str:
+    return re.sub(r"([*?\[])", r"[\1]", text)
+
+
+def _records(chunk: bytes) -> list[dict[str, Any]]:
+    out = []
+    for raw in chunk.splitlines():
+        try:
+            rec = json.loads(raw)
+        except ValueError:  # the window may cut a line in half
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+def _user_text(rec: dict[str, Any]) -> str | None:
+    if rec.get("type") != "user" or rec.get("isMeta"):
+        return None
+    content = (rec.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = next((c.get("text") for c in content if isinstance(c, dict) and c.get("type") == "text"), None)
+    if isinstance(content, str) and content.strip() and not content.lstrip().startswith("<"):
+        return content.strip()
+    return None
+
+
+def conversation_info(path: Path) -> dict[str, Any] | None:
+    """Title and last prompt of one transcript, from its first 64 KiB and last 256 KiB only."""
+    st = path.stat()
+    with path.open("rb") as f:
+        head = f.read(65536)
+        f.seek(max(0, st.st_size - 262144))
+        tail = f.read()
+    titles: dict[str, str] = {}
+    first = None
+    for rec in _records(head) + _records(tail):  # later records win
+        kind = rec.get("type")
+        for key, field_ in (("custom-title", "customTitle"), ("ai-title", "aiTitle"), ("last-prompt", "lastPrompt")):
+            if kind == key and isinstance(rec.get(field_), str) and rec[field_].strip():
+                titles[key] = rec[field_].strip()
+        if first is None:
+            first = _user_text(rec)
+    label = titles.get("custom-title") or titles.get("ai-title") or titles.get("last-prompt") or first
+    if label is None:
+        return None  # nothing was ever said in it
+    prompt = titles.get("last-prompt") or first or ""
+    return {"id": path.stem, "title": label[:160], "prompt": prompt[:300], "modified": st.st_mtime, "size": st.st_size}
+
+
+def list_conversations(cfg: Config, workdir: Path, limit: int = 20) -> list[dict[str, Any]]:
+    tdir = transcripts_dir(cfg, workdir)
+    if tdir is None:
+        return []
+    files = [f for f in tdir.glob("*.jsonl") if UUID_RE.match(f.stem)]
+    files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
+    out: list[dict[str, Any]] = []
+    for f in files[: limit * 3]:
+        try:
+            info = conversation_info(f)
+        except OSError:
+            continue
+        if info:
+            out.append(info)
+            if len(out) == limit:
+                break
+    return out
 
 
 # --------------------------------------------------------------------------- launch commands
@@ -193,7 +309,16 @@ def ghostty_argv(cfg: Config, tmux_name: str, workdir: Path, script: Path, title
 
 
 def render_run_script(
-    cfg: Config, *, workdir: Path, name: str, mode: str, cont: bool, prompt_file: Path, keep_shell: bool = True
+    cfg: Config,
+    *,
+    workdir: Path,
+    name: str,
+    mode: str,
+    cont: bool,
+    prompt_file: Path,
+    keep_shell: bool = True,
+    model: str | None = None,
+    resume: str | None = None,
 ) -> str:
     q = shlex.quote
     lines = [
@@ -206,7 +331,11 @@ def render_run_script(
         f"cd {q(str(workdir))} || exit 1",
         f"args=(--remote-control={q(name)} --permission-mode {q(mode)})",
     ]
-    if cont:
+    if model:
+        lines.append(f"args+=(--model {q(model)})")
+    if resume:
+        lines.append(f"args+=(--resume {q(resume)})")
+    elif cont:
         lines.append("args+=(--continue)")
     lines += [
         f"prompt={q(str(prompt_file))}",
@@ -469,6 +598,11 @@ class RCLauncher:
                 seen.add(real)
                 out.append({"name": Path(real).name, "path": real, "last_used": ts, "mtime": 0.0, "git": False})
         out.sort(key=lambda p: (-p["last_used"], -p["mtime"]))
+        if self.cfg.scratch is not None:  # pinned first, so its position never moves
+            real = str(self.cfg.scratch.resolve())
+            out = [p for p in out if p["path"] != real]
+            out.insert(0, {"name": "tmp", "path": real, "last_used": used.get(real, 0.0), "mtime": 0.0, "git": False,
+                           "scratch": True})  # fmt: skip
         return out
 
     # ---- start
@@ -491,8 +625,19 @@ class RCLauncher:
         prompt = req.get("prompt") or ""
         if not isinstance(prompt, str) or len(prompt) > 20000:
             raise BadRequest("prompt must be a string under 20k characters")
-        cont = bool(req.get("continue"))
-        raw_name = req.get("name") if isinstance(req.get("name"), str) and req.get("name") else workdir.name
+        model = req.get("model") or None
+        if model is not None and model not in self.cfg.models:
+            raise BadRequest(f"model must be one of {', '.join(self.cfg.models)}")
+        resume = req.get("resume") or None
+        if resume is not None:
+            tdir = transcripts_dir(self.cfg, workdir)
+            if not isinstance(resume, str) or not UUID_RE.match(resume):
+                raise BadRequest("resume must be a session id")
+            if tdir is None or not (tdir / f"{resume}.jsonl").is_file():
+                raise BadRequest("no such conversation in this folder")
+        cont = bool(req.get("continue")) and resume is None
+        default_name = "tmp" if is_scratch(self.cfg, workdir) else workdir.name
+        raw_name = req.get("name") if isinstance(req.get("name"), str) and req.get("name") else default_name
         with self.lock:
             name = self._unique_name(sanitize_name(raw_name), self.tmux.sessions())
             sdir = self.sessions_dir / name
@@ -503,17 +648,29 @@ class RCLauncher:
             prompt_file.write_text(prompt)
             script = sdir / "run.sh"
             script.write_text(
-                render_run_script(self.cfg, workdir=workdir, name=name, mode=mode, cont=cont, prompt_file=prompt_file)
+                render_run_script(
+                    self.cfg,
+                    workdir=workdir,
+                    name=name,
+                    mode=mode,
+                    cont=cont,
+                    prompt_file=prompt_file,
+                    model=model,
+                    resume=resume,
+                )
             )
             script.chmod(0o700)
             meta = {
                 "name": name, "tmux": SESSION_PREFIX + name, "dir": str(workdir), "mode": mode,
-                "continue": cont, "prompt": bool(prompt), "created": self.clock(), "seen": False,
-                "rc_url": None, "failed": None,
+                "continue": cont, "model": model, "resume": resume, "prompt": bool(prompt),
+                "created": self.clock(), "seen": False, "rc_url": None, "failed": None,
             }  # fmt: skip
             self._save(meta)
         argv = ghostty_argv(self.cfg, meta["tmux"], workdir, script, name)
-        log.info("launch %s in %s mode=%s continue=%s: %s", name, workdir, mode, cont, shlex.join(argv))
+        log.info(
+            "launch %s in %s mode=%s model=%s continue=%s resume=%s: %s",
+            name, workdir, mode, model or "default", cont, resume, shlex.join(argv),
+        )  # fmt: skip
         p = self.run(argv)
         if p.returncode != 0:
             shutil.rmtree(sdir, ignore_errors=True)
@@ -574,7 +731,7 @@ class RCLauncher:
 
     def _view(self, meta: dict[str, Any], live: dict[str, Any]) -> dict[str, Any]:
         view: dict[str, Any] = {
-            "name": meta["name"], "dir": meta.get("dir"), "mode": meta.get("mode"),
+            "name": meta["name"], "dir": meta.get("dir"), "mode": meta.get("mode"), "model": meta.get("model"),
             "created": meta.get("created"), "rc_url": meta.get("rc_url"), "busy": False,
             "dialog": None, "tail": [], "exit_code": None, "error": meta.get("failed"),
             "attach": f"{self.cfg.tmux_bin} -L {self.cfg.socket} attach -t {meta['tmux']}",
@@ -772,7 +929,18 @@ def make_handler(app: RCLauncher) -> type[BaseHTTPRequestHandler]:
                     return self._error(HTTPStatus.NOT_FOUND, "not found")
                 return self._send(200, body, ctype, "no-cache")
             if path == "/api/projects":
-                return self._json(200, {"projects": app.projects(), "modes": MODES, "default_mode": cfg.default_mode})
+                return self._json(
+                    200,
+                    {"projects": app.projects(), "modes": MODES, "default_mode": cfg.default_mode,
+                     "models": cfg.models},
+                )  # fmt: skip
+            if path == "/api/conversations":
+                raw = (parse_qs(urlsplit(self.path).query).get("dir") or [""])[0]
+                try:
+                    workdir = resolve_project(cfg, raw, create_scratch=False)
+                except BadRequest as exc:
+                    return self._error(HTTPStatus.BAD_REQUEST, str(exc))
+                return self._json(200, {"conversations": list_conversations(cfg, workdir)})
             if path == "/api/sessions":
                 return self._json(
                     200,

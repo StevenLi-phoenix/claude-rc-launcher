@@ -83,6 +83,21 @@ h2 .count { background: var(--mute-soft); color: var(--ink-2); border-radius: 99
 .chip[aria-pressed="true"] .n { color: var(--clay); }
 .empty-chips { color: var(--ink-3); font-size: 13px; padding: 14px 4px; grid-column: 1 / -1; }
 
+.ctls { margin-top: 14px; display: grid; gap: 10px; }
+.ctl { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: center; gap: 10px; }
+.ctl-l { font-size: 12.5px; font-weight: 600; color: var(--ink-2); }
+.seg button { white-space: nowrap; }
+.ctl-hint { margin: -4px 0 0 94px; font-size: 12px; color: var(--ink-3); }
+@media (max-width: 440px) { .ctl { grid-template-columns: minmax(0, 1fr); gap: 6px; } .ctl-hint { margin-left: 0; } }
+.resume { display: grid; gap: 6px; max-height: 280px; overflow-y: auto; padding: 2px; margin: -2px; overscroll-behavior: contain; }
+.conv { text-align: left; border: 1px solid var(--line); background: var(--bg-2); border-radius: 12px; padding: 9px 12px; cursor: pointer; display: grid; gap: 2px; min-width: 0; -webkit-tap-highlight-color: transparent; }
+.conv .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv .p { font-size: 12px; color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv[aria-pressed="true"] { background: var(--clay-soft); border-color: var(--clay); box-shadow: inset 0 0 0 1px var(--clay); }
+.conv[aria-pressed="true"] .t { color: var(--clay); }
+.resume .empty { color: var(--ink-3); font-size: 13px; padding: 6px 2px; }
+.chip.scratch { border-style: dashed; }
+.chip.scratch .n::before { content: "⌁ "; color: var(--clay); }
 details.opts { margin-top: 14px; border-top: 1px dashed var(--line); padding-top: 10px; }
 details.opts > summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; color: var(--ink-2); font-size: 14px; padding: 4px 0; user-select: none; }
 details.opts > summary::-webkit-details-marker { display: none; }
@@ -193,6 +208,14 @@ footer a { color: inherit; }
         </div>
         <div class="chips" id="chips" role="listbox"></div>
 
+        <div class="ctls">
+          <div class="ctl"><span class="ctl-l" data-t="model"></span><div class="seg" id="models"></div></div>
+          <div class="ctl"><span class="ctl-l" data-t="mode"></span><div class="seg" id="modes"></div></div>
+          <div class="hint ctl-hint" id="modeHint"></div>
+          <div class="ctl"><span class="ctl-l" data-t="conv"></span><div class="seg" id="convs"></div></div>
+          <div class="resume" id="resume" hidden></div>
+        </div>
+
         <details class="opts" id="opts">
           <summary>
             <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="m9 6 6 6-6 6"/></svg>
@@ -200,8 +223,6 @@ footer a { color: inherit; }
             <span class="sumtags" id="sumtags"></span>
           </summary>
           <div class="field"><label for="prompt" data-t="prompt"></label><textarea id="prompt"></textarea></div>
-          <div class="field"><label data-t="mode"></label><div class="seg" id="modes"></div><div class="hint" id="modeHint"></div></div>
-          <label class="toggle"><input type="checkbox" id="cont"><span data-t="cont"></span></label>
           <div class="field"><label for="name" data-t="name"></label><input id="name" autocomplete="off" spellcheck="false" maxlength="40"></div>
           <div class="field"><label for="custom" data-t="custom"></label><input id="custom" autocomplete="off" spellcheck="false" inputmode="url"><div class="hint" data-t="customHint"></div></div>
         </details>
@@ -228,7 +249,9 @@ const T = {
   en: {
     tagline: "Claude Code + Remote Control", new: "New session", sessions: "Sessions", search: "Search projects…",
     options: "Options", prompt: "First message (optional)", promptPh: "e.g. run the tests and fix what fails",
-    mode: "Permission mode", cont: "Continue the last conversation<small>Picks up the most recent session in this folder</small>",
+    model: "Model", modelDefault: "default", mode: "Permission", conv: "Conversation",
+    convNew: "New", convCont: "Continue last", convResume: "Resume…", pickConv: "Pick a conversation",
+    noConvs: "No earlier conversations in this folder.", loadingConvs: "Loading…", scratch: "scratch",
     name: "Session name", namePh: "defaults to the folder name", custom: "Other folder",
     customHint: "Absolute path inside an allowed root. Overrides the selection above.",
     launch: "Launch on", pick: "Pick a project", launching: "Launching…", noProjects: "No projects match.",
@@ -248,7 +271,9 @@ const T = {
   zh: {
     tagline: "Claude Code + Remote Control", new: "新会话", sessions: "会话", search: "搜索项目…",
     options: "选项", prompt: "首条消息（可选）", promptPh: "例如：跑一遍测试，把失败的修好",
-    mode: "权限模式", cont: "继续上次对话<small>接着这个目录里最近的一次会话</small>",
+    model: "模型", modelDefault: "默认", mode: "权限", conv: "对话",
+    convNew: "新对话", convCont: "继续上次", convResume: "恢复…", pickConv: "选一个要恢复的对话",
+    noConvs: "这个目录里还没有历史对话", loadingConvs: "加载中…", scratch: "临时目录",
     name: "会话名", namePh: "默认用目录名", custom: "其他目录",
     customHint: "允许范围内的绝对路径，填了就以它为准。",
     launch: "启动于", pick: "先选一个项目", launching: "启动中…", noProjects: "没有匹配的项目",
@@ -302,7 +327,11 @@ async function api(path, body) {
 }
 
 /* ---------------- launcher ---------------- */
-const S = { projects: [], selected: store.get("selected", null), mode: store.get("mode", null), host: "", modes: [], defaultMode: "auto", fresh: null };
+const S = {
+  projects: [], selected: store.get("selected", null), mode: store.get("mode", null), model: store.get("model", ""),
+  host: "", modes: [], models: [], defaultMode: "auto", fresh: null,
+  conv: "new", resumeId: null, convs: null, convsFor: null, // conv: new | continue | resume
+};
 
 function renderChips() {
   const q = $("q").value.trim().toLowerCase();
@@ -310,13 +339,62 @@ function renderChips() {
   const list = S.projects.filter(p => !q || p.name.toLowerCase().includes(q) || p.path.toLowerCase().includes(q));
   const now = Date.now() / 1000;
   box.replaceChildren(...(list.length ? list.map(p => {
-    const b = el("button", "chip" + (p.last_used ? " recent" : ""));
+    const b = el("button", "chip" + (p.last_used ? " recent" : "") + (p.scratch ? " scratch" : ""));
     b.type = "button"; b.setAttribute("aria-pressed", String(p.path === S.selected)); b.title = p.path;
-    const meta = p.last_used ? L.used(L.ago(now - p.last_used)) : p.mtime ? L.edited(L.ago(now - p.mtime)) : shortPath(p.path);
+    const meta = p.last_used ? L.used(L.ago(now - p.last_used)) : p.scratch ? `${L.scratch} · ${shortPath(p.path)}`
+      : p.mtime ? L.edited(L.ago(now - p.mtime)) : shortPath(p.path);
     b.append(el("span", "n", p.name), el("span", "m", meta));
-    b.onclick = () => { S.selected = p.path === S.selected ? null : p.path; store.set("selected", S.selected); renderChips(); renderLaunch(); };
+    b.onclick = () => { S.selected = p.path === S.selected ? null : p.path; store.set("selected", S.selected); renderChips(); targetChanged(); };
     return b;
   }) : [el("div", "empty-chips", L.noProjects)]));
+}
+function seg(box, items, current, onPick, cls) {
+  box.replaceChildren(...items.map(([value, label]) => {
+    const b = el("button", cls ? cls(value) : "", label); b.type = "button";
+    b.setAttribute("aria-pressed", String(value === current));
+    b.onclick = () => onPick(value);
+    return b;
+  }));
+}
+function renderModels() {
+  seg($("models"), [["", L.modelDefault], ...S.models.map(m => [m, m])], S.model,
+      m => { S.model = m; store.set("model", m); renderModels(); renderLaunch(); });
+}
+function renderConv() {
+  seg($("convs"), [["new", L.convNew], ["continue", L.convCont], ["resume", L.convResume]], S.conv, v => {
+    S.conv = v; S.resumeId = null; renderConv();
+    if (v === "resume") loadConvs(); else renderResume();
+    renderLaunch();
+  });
+}
+function targetChanged() {
+  if (S.conv === "resume") { S.resumeId = null; loadConvs(); }
+  renderLaunch();
+}
+async function loadConvs() {
+  const dir = target();
+  S.convsFor = dir; S.convs = dir ? null : []; renderResume();
+  if (!dir) return;
+  let list = [];
+  try { list = (await api(`/api/conversations?dir=${encodeURIComponent(dir)}`)).conversations || []; } catch {}
+  if (S.convsFor !== dir) return; // the selection moved on while this was loading
+  S.convs = list; renderResume();
+}
+function renderResume() {
+  const box = $("resume");
+  box.hidden = S.conv !== "resume";
+  if (box.hidden) return;
+  if (S.convs === null) { box.replaceChildren(el("div", "empty", L.loadingConvs)); return; }
+  if (!S.convs.length) { box.replaceChildren(el("div", "empty", L.noConvs)); return; }
+  const now = Date.now() / 1000;
+  box.replaceChildren(...S.convs.map(c => {
+    const b = el("button", "conv"); b.type = "button"; b.setAttribute("aria-pressed", String(c.id === S.resumeId));
+    const detail = c.prompt && c.prompt !== c.title ? ` · ${c.prompt}` : "";
+    b.append(el("span", "t", c.title), el("span", "p", L.used(L.ago(now - c.modified)) + detail));
+    b.title = c.id;
+    b.onclick = () => { S.resumeId = c.id; renderResume(); renderLaunch(); };
+    return b;
+  }));
 }
 function renderModes() {
   const box = $("modes");
@@ -331,24 +409,31 @@ function renderModes() {
 function target() { return $("custom").value.trim() || S.selected; }
 function renderLaunch() {
   const t = target(), btn = $("launch");
-  btn.disabled = !t || btn.classList.contains("busy");
-  setText($("launchLabel"), btn.classList.contains("busy") ? L.launching : t ? `${L.launch} ${S.host || "Mac"}` : L.pick);
-  setText($("launchSub"), t && !btn.classList.contains("busy") ? "· " + t.split("/").filter(Boolean).pop() : "");
+  const busy = btn.classList.contains("busy"), needConv = S.conv === "resume" && !S.resumeId;
+  btn.disabled = !t || busy || needConv;
+  setText($("launchLabel"), busy ? L.launching : !t ? L.pick : needConv ? L.pickConv : `${L.launch} ${S.host || "Mac"}`);
+  const proj = t ? (S.projects.find(p => p.path === t && p.scratch) ? "tmp" : t.split("/").filter(Boolean).pop()) : "";
+  setText($("launchSub"), t && !busy && !needConv ? `· ${proj}${S.model ? " · " + S.model : ""}` : "");
   const tags = [];
-  if (S.mode && S.mode !== S.defaultMode) tags.push([S.mode, true]);
-  if ($("cont").checked) tags.push(["--continue", true]);
   if ($("prompt").value.trim()) tags.push(["prompt", false]);
+  if ($("name").value.trim()) tags.push([$("name").value.trim(), false]);
+  if ($("custom").value.trim()) tags.push(["path", true]);
   $("sumtags").replaceChildren(...tags.map(([txt, hot]) => el("span", "tag" + (hot ? " hot" : ""), txt)));
 }
 ["q"].forEach(id => $(id).addEventListener("input", renderChips));
-["custom", "prompt", "name"].forEach(id => $(id).addEventListener("input", renderLaunch));
-$("cont").addEventListener("change", renderLaunch);
+["prompt", "name"].forEach(id => $(id).addEventListener("input", renderLaunch));
+$("custom").addEventListener("input", targetChanged);
 $("launch").onclick = async () => {
   const btn = $("launch"); btn.classList.add("busy"); renderLaunch();
   try {
-    const meta = await api("/api/start", { dir: target(), mode: S.mode, prompt: $("prompt").value, name: $("name").value.trim() || undefined, continue: $("cont").checked });
+    const meta = await api("/api/start", {
+      dir: target(), mode: S.mode, model: S.model || undefined, prompt: $("prompt").value,
+      name: $("name").value.trim() || undefined, continue: S.conv === "continue",
+      resume: S.conv === "resume" ? S.resumeId : undefined,
+    });
     S.fresh = meta.name; toast(L.started(meta.name));
-    $("prompt").value = ""; $("name").value = ""; $("cont").checked = false; $("custom").value = "";
+    $("prompt").value = ""; $("name").value = ""; $("custom").value = "";
+    S.conv = "new"; S.resumeId = null; renderConv(); renderResume();
     loadProjects(); await poll();
     const card = cards.get(meta.name); if (card && window.innerWidth < 920) card.root.scrollIntoView({ behavior: "smooth", block: "center" });
   } catch (e) { toast(e.message, true); }
@@ -357,11 +442,13 @@ $("launch").onclick = async () => {
 async function loadProjects() {
   try {
     const d = await api("/api/projects");
-    S.projects = d.projects; S.modes = d.modes; S.defaultMode = d.default_mode;
+    S.projects = d.projects; S.modes = d.modes; S.defaultMode = d.default_mode; S.models = d.models || [];
     if (!S.modes.includes(S.mode)) S.mode = d.default_mode;
+    if (S.model && !S.models.includes(S.model)) S.model = "";
     if (S.selected && !S.projects.some(p => p.path === S.selected)) S.selected = null;
-    if (!S.selected && S.projects[0] && S.projects[0].last_used) S.selected = S.projects[0].path; // one tap relaunches the latest
-    renderChips(); renderModes(); renderLaunch();
+    const latest = S.projects.filter(p => p.last_used).sort((a, b) => b.last_used - a.last_used)[0];
+    if (!S.selected && latest) S.selected = latest.path; // one tap relaunches the latest
+    renderChips(); renderModels(); renderModes(); renderConv(); renderResume(); renderLaunch();
   } catch (e) { toast(e.message, true); }
 }
 
@@ -409,7 +496,7 @@ function update(c, s, force) {
   if (!force && c.key === key) return;
   c.key = key;
   const dir = shortPath(s.dir);
-  c.where.replaceChildren(el("b", "", dir), document.createTextNode(s.mode ? `  ·  ${s.mode}` : ""));
+  c.where.replaceChildren(el("b", "", dir), document.createTextNode([s.mode, s.model].filter(Boolean).map(x => `  ·  ${x}`).join("")));
   const err = s.error || (st === "needs-login" ? L.login : st === "exited" && s.exit_code ? L.exitCode(s.exit_code) : "");
   c.err.hidden = !err; setText(c.err, err);
   const d = s.dialog;
