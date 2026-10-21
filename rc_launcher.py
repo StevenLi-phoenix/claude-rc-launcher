@@ -19,6 +19,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import threading
 import time
@@ -311,6 +312,16 @@ def parse_pane(text: str) -> PaneState:
     return PaneState("starting", tail=tail)
 
 
+def parse_etime(text: str) -> int:
+    """`ps -o etime` ([[dd-]hh:]mm:ss) in seconds."""
+    days, _, clock = text.strip().rpartition("-")
+    parts = [int(p) for p in clock.split(":")]
+    while len(parts) < 3:
+        parts.insert(0, 0)
+    hours, minutes, seconds = parts[-3:]
+    return (int(days) if days else 0) * 86400 + hours * 3600 + minutes * 60 + seconds
+
+
 def keys_for_option(selected: int, target: int) -> list[str]:
     step = "Down" if target > selected else "Up"
     return [step] * abs(target - selected) + ["Enter"]
@@ -395,6 +406,7 @@ class RCLauncher:
         self.history = History(cfg.state_dir / "history.json")
         self.lock = threading.RLock()
         self.claude_version = ""
+        self.kill: Callable[[int, int], None] = os.kill
 
     # ---- metadata
 
@@ -583,8 +595,36 @@ class RCLauncher:
             view["state"] = "launching"
         return view
 
+    def _ghostty_instances(self) -> list[tuple[int, int, str]]:
+        """(pid, age in seconds, tmux session) of the Ghostty instances this launcher opened."""
+        exe = f"{self.cfg.ghostty_app}/Contents/MacOS/ghostty "
+        sig = re.compile(
+            rf" -L {re.escape(self.cfg.socket)} new-session -A -s ({re.escape(SESSION_PREFIX)}[A-Za-z0-9_-]+) "
+        )
+        found = []
+        for line in self.run(["/bin/ps", "-axww", "-o", "pid=,etime=,args="]).stdout.splitlines():
+            parts = line.split(None, 2)
+            if len(parts) == 3 and parts[0].isdigit() and parts[2].startswith(exe):
+                m = sig.search(parts[2])
+                if m:
+                    found.append((int(parts[0]), parse_etime(parts[1]), m.group(1)))
+        return found
+
+    def reap(self, live: Mapping[str, Any]) -> None:
+        """Quit Ghostty instances whose tmux session is gone. Ghostty normally quits by itself once its
+        window closes, but a leftover panel can keep an instance alive, which would pile up one per launch.
+        Only instances older than the launch timeout are touched, so a session still starting is safe."""
+        for pid, age, tname in self._ghostty_instances():
+            if tname not in live and age > self.cfg.launch_timeout:
+                log.info("reap Ghostty pid %s: its session %s is gone", pid, tname)
+                try:
+                    self.kill(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
     def list_sessions(self) -> list[dict[str, Any]]:
         live = self.tmux.sessions()
+        self.reap(live)
         metas = self._metas()
         known = {m["tmux"] for m in metas}
         for tname, info in live.items():  # sessions whose metadata is gone (e.g. state dir wiped)
@@ -614,6 +654,7 @@ class RCLauncher:
         if alive:
             log.info("stop %s", name)
             self.tmux.kill(tname)
+            self.reap(self.tmux.sessions())
         shutil.rmtree(self.sessions_dir / name, ignore_errors=True)
 
     def answer(self, name: str, body: Mapping[str, Any]) -> None:

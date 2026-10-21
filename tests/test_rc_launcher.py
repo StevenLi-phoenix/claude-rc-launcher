@@ -84,12 +84,15 @@ class FakeRunner:
         self.calls: list[list[str]] = []
         self.live: dict[str, str] = {}  # tmux session name -> pane text
         self.open_rc = 0
+        self.ps_out = ""
 
     def __call__(self, argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
         argv = list(argv)
         self.calls.append(argv)
         if argv[0].endswith("open"):
             return subprocess.CompletedProcess(argv, self.open_rc, "", "boom" if self.open_rc else "")
+        if argv[0] == "/bin/ps":
+            return subprocess.CompletedProcess(argv, 0, self.ps_out, "")
         assert argv[1:3] == ["-L", "claude-rc"], argv
         cmd = argv[3]
         if cmd == "list-sessions":
@@ -462,3 +465,32 @@ def test_http_start_list_stop(server: str, roots: Path, runner: FakeRunner) -> N
     assert call(server + "/api/sessions/beta/stop", "POST")[0] == 200
     assert call(server + "/api/sessions/nope/stop", "POST")[0] == 404
     assert call(server + "/api/sessions/..%2Fx/stop", "POST")[0] == 404
+
+
+# --------------------------------------------------------------------------- reaping leftover Ghostty instances
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(("raw", "seconds"), [("00:07", 7), ("01:02:03", 3723), ("2-00:00:10", 172810), (" 5:00", 300)])
+def test_parse_etime(raw: str, seconds: int) -> None:
+    assert lp.parse_etime(raw) == seconds
+
+
+@pytest.mark.unit
+def test_reap_only_our_orphaned_old_instances(app: lp.RCLauncher, runner: FakeRunner) -> None:
+    g = "/Applications/Ghostty.app/Contents/MacOS/ghostty"
+    sig = "-e /opt/homebrew/bin/tmux -L claude-rc new-session -A -s {} -c /x /s/run.sh"
+    runner.live["rc-live"] = RUNNING_PANE
+    runner.ps_out = "\n".join(
+        [
+            f"  101   1-02:00:00 {g}",  # the user's own Ghostty
+            f"  102        05:00 {g} --title=claude-rc · live {sig.format('rc-live')}",  # session still running
+            f"  103        00:10 {g} --title=claude-rc · young {sig.format('rc-young')}",  # still launching
+            f"  104        02:00 {g} --title=claude-rc · old {sig.format('rc-old')}",  # orphan: reap
+            f"  105        09:00 /bin/zsh -c open -na Ghostty --args {sig.format('rc-old')}",  # not Ghostty
+        ]
+    )
+    killed: list[int] = []
+    app.kill = lambda pid, sig: killed.append(pid)
+    app.list_sessions()
+    assert killed == [104]
