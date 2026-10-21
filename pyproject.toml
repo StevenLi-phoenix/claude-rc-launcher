@@ -1,5 +1,5 @@
 [project]
-name = "claude-launchpad"
+name = "claude-rc-launcher"
 version = "0.1.0"
 description = "One tap to start a Claude Code session with Remote Control on your Mac, from any device on your tailnet."
 requires-python = ">=3.11"

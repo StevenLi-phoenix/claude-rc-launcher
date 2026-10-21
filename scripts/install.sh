@@ -1,5 +1,5 @@
 #!/bin/bash
-# install.sh — install (or update) claude-launchpad as a LaunchAgent on the Mac that hosts the sessions.
+# install.sh — install (or update) claude-rc-launcher as a LaunchAgent on the Mac that hosts the sessions.
 # Run it on that Mac, from the repo checkout. Re-running it redeploys.
 #
 # usage: scripts/install.sh [--skip-fda] [--uninstall]
@@ -7,20 +7,20 @@
 #   --uninstall   stop and remove the LaunchAgent (sessions that are running stay up)
 #
 # Optional environment (written into the LaunchAgent):
-#   LAUNCHPAD_ALLOWED_LOGINS  comma-separated Tailscale logins allowed in (recommended)
-#   LAUNCHPAD_PUBLIC_HOSTS    comma-separated host names the page is served under, e.g. launchpad.<tailnet>.ts.net
-#   LAUNCHPAD_ROOTS           colon-separated project roots (default ~/Codes)
-#   LAUNCHPAD_HOST_LABEL      machine name shown in the page header (default: short hostname)
-#   LAUNCHPAD_DEFAULT_MODE    default permission mode (default auto)
-#   LAUNCHPAD_PORT            local port (default 8795)
-#   LAUNCHPAD_LABEL           LaunchAgent label (default app.claude-launchpad)
+#   RC_LAUNCHER_ALLOWED_LOGINS  comma-separated Tailscale logins allowed in (recommended)
+#   RC_LAUNCHER_PUBLIC_HOSTS    comma-separated host names the page is served under, e.g. claude-rc.<tailnet>.ts.net
+#   RC_LAUNCHER_ROOTS           colon-separated project roots (default ~/Codes)
+#   RC_LAUNCHER_HOST_LABEL      machine name shown in the page header (default: short hostname)
+#   RC_LAUNCHER_DEFAULT_MODE    default permission mode (default auto)
+#   RC_LAUNCHER_PORT            local port (default 8795)
+#   RC_LAUNCHER_LABEL           LaunchAgent label (default app.claude-rc-launcher)
 set -euo pipefail
 
 REPO=$(cd "$(dirname "$0")/.." && pwd -P)
-LABEL=${LAUNCHPAD_LABEL:-app.claude-launchpad}
-PORT=${LAUNCHPAD_PORT:-8795}
+LABEL=${RC_LAUNCHER_LABEL:-app.claude-rc-launcher}
+PORT=${RC_LAUNCHER_PORT:-8795}
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
-LOGDIR="$HOME/Library/Logs/claude-launchpad"
+LOGDIR="$HOME/Library/Logs/claude-rc-launcher"
 GHOSTTY=/Applications/Ghostty.app
 SESSION_PATH="$HOME/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 export PATH="$SESSION_PATH"
@@ -34,7 +34,7 @@ for arg in "$@"; do
   esac
 done
 
-log() { printf '[launchpad] %s\n' "$*" >&2; }
+log() { printf '[rc-launcher] %s\n' "$*" >&2; }
 die() { log "ERROR: $*"; exit 1; }
 
 if ((UNINSTALL)); then
@@ -63,8 +63,8 @@ log "python: $("$PY" --version)"
 # and check again until it is on.
 probe_fda() {
   local out
-  out=$(mktemp -t launchpad-fda)
-  open -na "$GHOSTTY" --args --title="launchpad · permission check" --quit-after-last-window-closed=true \
+  out=$(mktemp -t rc-launcher-fda)
+  open -na "$GHOSTTY" --args --title="claude-rc · permission check" --quit-after-last-window-closed=true \
     --window-save-state=never --auto-update=off -e /bin/bash -c \
     "if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'"
   for _ in $(seq 1 30); do
@@ -85,7 +85,7 @@ if ((SKIP_FDA == 0)); then
         log "Ghostty needs Full Disk Access. System Settings is open on this Mac at Privacy & Security → Full Disk Access;"
         log "Ghostty is listed there now — switch it on (use + → /Applications/Ghostty.app if it is missing)."
         [[ -t 0 ]] || die "re-run this script after enabling it (or pass --skip-fda)"
-        read -r -p "[launchpad] press Enter once it is on… " _
+        read -r -p "[rc-launcher] press Enter once it is on… " _
         ;;
       *) die "the Ghostty permission check did not report back (is someone logged in to this Mac's desktop?)" ;;
     esac
@@ -101,15 +101,15 @@ env = {
     "HOME": os.environ["HOME"],
     "PATH": os.environ["SESSION_PATH"],
     "LANG": "en_US.UTF-8",
-    "LAUNCHPAD_PORT": os.environ["PORT"],
+    "RC_LAUNCHER_PORT": os.environ["PORT"],
 }
-for key in ("LAUNCHPAD_ALLOWED_LOGINS", "LAUNCHPAD_PUBLIC_HOSTS", "LAUNCHPAD_ROOTS", "LAUNCHPAD_HOST_LABEL",
-            "LAUNCHPAD_DEFAULT_MODE"):
+for key in ("RC_LAUNCHER_ALLOWED_LOGINS", "RC_LAUNCHER_PUBLIC_HOSTS", "RC_LAUNCHER_ROOTS", "RC_LAUNCHER_HOST_LABEL",
+            "RC_LAUNCHER_DEFAULT_MODE"):
     if os.environ.get(key):
         env[key] = os.environ[key]
 plist = {
     "Label": os.environ["LABEL"],
-    "ProgramArguments": [os.environ["PY"], os.path.join(os.environ["REPO"], "launchpad.py")],
+    "ProgramArguments": [os.environ["PY"], os.path.join(os.environ["REPO"], "rc_launcher.py")],
     "WorkingDirectory": os.environ["REPO"],
     "EnvironmentVariables": env,
     "RunAtLoad": True,
@@ -130,7 +130,7 @@ log "loaded $LABEL ($PLIST)"
 for _ in $(seq 1 30); do
   if curl -fsS "http://127.0.0.1:$PORT/healthz" >/dev/null 2>&1; then
     log "up on http://127.0.0.1:$PORT — logs in $LOGDIR"
-    log "share it on your tailnet, e.g.: tailscale serve --bg --https=443 --service=svc:launchpad http://127.0.0.1:$PORT"
+    log "share it on your tailnet, e.g.: tailscale serve --bg --https=443 --service=svc:claude-rc http://127.0.0.1:$PORT"
     exit 0
   fi
   sleep 0.5

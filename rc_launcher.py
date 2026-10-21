@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""claude-launchpad: start a Claude Code session with Remote Control on this Mac, from any device.
+"""claude-rc-launcher: start a Claude Code session with Remote Control on this Mac, from any device.
 
 Each launch opens a new Ghostty window, which attaches to a tmux session on a dedicated socket,
 which runs `claude --remote-control`. Ghostty is the point: it runs inside the GUI login session,
@@ -8,7 +8,7 @@ which an SSH-started process gets. The tmux server is always born inside a Ghost
 daemon only ever runs client commands against it (list / capture / send-keys / kill), so every
 session keeps Ghostty's TCC context while still being observable and controllable from here.
 
-Stdlib only. Configuration comes from LAUNCHPAD_* environment variables (see Config.from_env).
+Stdlib only. Configuration comes from RC_LAUNCHER_* environment variables (see Config.from_env).
 """
 
 from __future__ import annotations
@@ -30,13 +30,13 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
 
-log = logging.getLogger("launchpad")
+log = logging.getLogger("rc-launcher")
 
 MODES = ("auto", "acceptEdits", "plan", "bypassPermissions", "manual")
-SESSION_PREFIX = "lp-"
+SESSION_PREFIX = "rc-"
 NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,48}$")
 RC_URL_RE = re.compile(r"https://claude\.ai/code/session_[A-Za-z0-9]+")
-EXIT_RE = re.compile(r"\[launchpad\] claude exited \((\d+)\)")
+EXIT_RE = re.compile(r"\[rc-launcher\] claude exited \((\d+)\)")
 LOGIN_RE = re.compile(r"Select login method|Please run /login|Invalid API key|OAuth token has expired")
 PROMPT_RE = re.compile(r"⏵⏵|shift\+tab to cycle|\? for shortcuts|esc to interrupt")
 SEPARATOR_RE = re.compile(r"^\s*[─━]{8,}\s*$")
@@ -87,7 +87,7 @@ class Config:
     port: int = 8795
     bind: str = "127.0.0.1"
     roots: tuple[Path, ...] = (Path.home() / "Codes",)
-    state_dir: Path = Path.home() / ".claude-launchpad"
+    state_dir: Path = Path.home() / ".claude-rc-launcher"
     # Tailscale identities allowed in (Tailscale-User-Login header set by `tailscale serve`). Empty = no check.
     allowed_logins: frozenset[str] = frozenset()
     # Host names this daemon is reached under (besides localhost); requests for any other Host are refused.
@@ -96,7 +96,7 @@ class Config:
     open_bin: str = "/usr/bin/open"
     tmux_bin: str = "tmux"
     claude_bin: str = "claude"
-    socket: str = "launchpad"
+    socket: str = "claude-rc"
     default_mode: str = "auto"
     session_path: str = field(default_factory=_default_session_path)
     host_label: str = ""
@@ -106,29 +106,29 @@ class Config:
     @classmethod
     def from_env(cls, env: Mapping[str, str]) -> Config:
         base = cls()
-        path = env.get("LAUNCHPAD_SESSION_PATH", base.session_path)
+        path = env.get("RC_LAUNCHER_SESSION_PATH", base.session_path)
 
         def which(name: str, override: str) -> str:
             return env.get(override) or shutil.which(name, path=path) or name
 
-        mode = env.get("LAUNCHPAD_DEFAULT_MODE", base.default_mode)
+        mode = env.get("RC_LAUNCHER_DEFAULT_MODE", base.default_mode)
         if mode not in MODES:
-            raise SystemExit(f"LAUNCHPAD_DEFAULT_MODE must be one of {MODES}")
-        roots = env.get("LAUNCHPAD_ROOTS")
+            raise SystemExit(f"RC_LAUNCHER_DEFAULT_MODE must be one of {MODES}")
+        roots = env.get("RC_LAUNCHER_ROOTS")
         return cls(
-            port=int(env.get("LAUNCHPAD_PORT", base.port)),
-            bind=env.get("LAUNCHPAD_BIND", base.bind),
+            port=int(env.get("RC_LAUNCHER_PORT", base.port)),
+            bind=env.get("RC_LAUNCHER_BIND", base.bind),
             roots=tuple(Path(os.path.expanduser(r)) for r in _split(roots, ":")) if roots else base.roots,
-            state_dir=Path(os.path.expanduser(env.get("LAUNCHPAD_STATE_DIR", str(base.state_dir)))),
-            allowed_logins=frozenset(_split(env.get("LAUNCHPAD_ALLOWED_LOGINS", ""), ",")),
-            public_hosts=frozenset(h.lower() for h in _split(env.get("LAUNCHPAD_PUBLIC_HOSTS", ""), ",")),
-            ghostty_app=env.get("LAUNCHPAD_GHOSTTY_APP", base.ghostty_app),
-            tmux_bin=which("tmux", "LAUNCHPAD_TMUX"),
-            claude_bin=which("claude", "LAUNCHPAD_CLAUDE"),
-            socket=env.get("LAUNCHPAD_TMUX_SOCKET", base.socket),
+            state_dir=Path(os.path.expanduser(env.get("RC_LAUNCHER_STATE_DIR", str(base.state_dir)))),
+            allowed_logins=frozenset(_split(env.get("RC_LAUNCHER_ALLOWED_LOGINS", ""), ",")),
+            public_hosts=frozenset(h.lower() for h in _split(env.get("RC_LAUNCHER_PUBLIC_HOSTS", ""), ",")),
+            ghostty_app=env.get("RC_LAUNCHER_GHOSTTY_APP", base.ghostty_app),
+            tmux_bin=which("tmux", "RC_LAUNCHER_TMUX"),
+            claude_bin=which("claude", "RC_LAUNCHER_CLAUDE"),
+            socket=env.get("RC_LAUNCHER_TMUX_SOCKET", base.socket),
             default_mode=mode,
             session_path=path,
-            host_label=env.get("LAUNCHPAD_HOST_LABEL") or os.uname().nodename.split(".")[0],
+            host_label=env.get("RC_LAUNCHER_HOST_LABEL") or os.uname().nodename.split(".")[0],
         )
 
 
@@ -179,7 +179,7 @@ def ghostty_argv(cfg: Config, tmux_name: str, workdir: Path, script: Path, title
     for this daemon, and the instance quits once its window closes (the tmux session lives on)."""
     return [
         cfg.open_bin, "-na", cfg.ghostty_app, "--args",
-        f"--title=launchpad · {title}",
+        f"--title=claude-rc · {title}",
         "--quit-after-last-window-closed=true",
         "--window-save-state=never",
         "--confirm-close-surface=false",
@@ -195,7 +195,7 @@ def render_run_script(
     q = shlex.quote
     lines = [
         "#!/bin/bash",
-        f"# Written by claude-launchpad for session {name}; runs inside tmux inside Ghostty.",
+        f"# Written by claude-rc-launcher for session {name}; runs inside tmux inside Ghostty.",
         "set -uo pipefail",
         f"export PATH={q(cfg.session_path)}",
         'export LANG="${LANG:-en_US.UTF-8}"',
@@ -211,7 +211,7 @@ def render_run_script(
         # caffeinate holds a no-sleep assertion for exactly as long as claude runs
         f'caffeinate -ims {q(cfg.claude_bin)} "${{args[@]}}"',
         "code=$?",
-        'echo "[launchpad] claude exited ($code)"',
+        'echo "[rc-launcher] claude exited ($code)"',
     ]
     if keep_shell:  # keep the pane so the exit reason stays readable; Stop/Dismiss kills it
         lines.append("exec /bin/zsh -l")
@@ -323,7 +323,7 @@ def run_cmd(argv: Sequence[str]) -> subprocess.CompletedProcess[str]:
 
 
 class Tmux:
-    """Client-side commands against the launchpad tmux server. Never starts a server."""
+    """Client-side commands against the claude-rc tmux server. Never starts a server."""
 
     def __init__(self, cfg: Config, run: Runner) -> None:
         self.cfg = cfg
@@ -383,7 +383,7 @@ class History:
 # --------------------------------------------------------------------------- the launcher
 
 
-class Launchpad:
+class RCLauncher:
     def __init__(self, cfg: Config, run: Runner = run_cmd, watch: bool = True) -> None:
         self.cfg = cfg
         self.tmux = Tmux(cfg, run)
@@ -635,12 +635,12 @@ class Launchpad:
 # --------------------------------------------------------------------------- HTTP
 
 
-def make_handler(app: Launchpad) -> type[BaseHTTPRequestHandler]:
+def make_handler(app: RCLauncher) -> type[BaseHTTPRequestHandler]:
     cfg = app.cfg
     local_hosts = {f"127.0.0.1:{cfg.port}", f"localhost:{cfg.port}", "127.0.0.1", "localhost"}
 
     class Handler(BaseHTTPRequestHandler):
-        server_version = "claude-launchpad"
+        server_version = "claude-rc-launcher"
         sys_version = ""
 
         def log_message(self, fmt: str, *args: Any) -> None:
@@ -681,8 +681,8 @@ def make_handler(app: Launchpad) -> type[BaseHTTPRequestHandler]:
             ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
             if ctype != "application/json":
                 return "Content-Type must be application/json"
-            if self.headers.get("X-Launchpad") != "1":
-                return "missing X-Launchpad header"
+            if self.headers.get("X-RC-Launcher") != "1":
+                return "missing X-RC-Launcher header"
             origin = self.headers.get("Origin")
             if origin and origin != "null":
                 allowed = {self.headers.get("Host", ""), self.headers.get("X-Forwarded-Host", "")} | cfg.public_hosts
@@ -768,11 +768,11 @@ def make_handler(app: Launchpad) -> type[BaseHTTPRequestHandler]:
 
 def main() -> None:
     logging.basicConfig(
-        level=os.environ.get("LAUNCHPAD_LOG_LEVEL", "INFO"),
+        level=os.environ.get("RC_LAUNCHER_LOG_LEVEL", "INFO"),
         format="%(asctime)s %(levelname)s %(threadName)s: %(message)s",
     )
     cfg = Config.from_env(os.environ)
-    app = Launchpad(cfg)
+    app = RCLauncher(cfg)
     try:
         app.claude_version = run_cmd([cfg.claude_bin, "--version"]).stdout.strip().split(" ")[0]
     except (OSError, subprocess.SubprocessError):

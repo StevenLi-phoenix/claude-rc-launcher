@@ -1,4 +1,4 @@
-"""Tests for claude-launchpad. External commands (open, tmux) go through a fake runner."""
+"""Tests for claude-rc-launcher. External commands (open, tmux) go through a fake runner."""
 
 from __future__ import annotations
 
@@ -15,14 +15,14 @@ from pathlib import Path
 
 import pytest
 
-import launchpad as lp
+import rc_launcher as lp
 
 TRUST_PANE = textwrap.dedent(
     """\
     ────────────────────────────────────────────────────────────────
      Accessing workspace:
 
-     /private/tmp/lp-probe
+     /private/tmp/rc-probe
 
      Quick safety check: Is this a project you created or one you trust?
 
@@ -41,7 +41,7 @@ RUNNING_PANE = textwrap.dedent(
     """\
      ▐▛███▛█   Claude Code v2.1.306
     ▝▜██████▀  Fable 5.1 with high effort · Claude Max
-     ▝▝   ▝▝   /private/tmp/lp-probe
+     ▝▝   ▝▝   /private/tmp/rc-probe
 
     ❯ say hi in 3 words
 
@@ -90,7 +90,7 @@ class FakeRunner:
         self.calls.append(argv)
         if argv[0].endswith("open"):
             return subprocess.CompletedProcess(argv, self.open_rc, "", "boom" if self.open_rc else "")
-        assert argv[1:3] == ["-L", "launchpad"], argv
+        assert argv[1:3] == ["-L", "claude-rc"], argv
         cmd = argv[3]
         if cmd == "list-sessions":
             if not self.live:
@@ -133,7 +133,7 @@ def cfg(tmp_path: Path, roots: Path) -> lp.Config:
         tmux_bin="/opt/homebrew/bin/tmux",
         claude_bin="/Users/x/.local/bin/claude",
         allowed_logins=frozenset({"me@example.com"}),
-        public_hosts=frozenset({"launchpad.example.ts.net"}),
+        public_hosts=frozenset({"claude-rc.example.ts.net"}),
         launch_timeout=45.0,
     )
 
@@ -144,8 +144,8 @@ def runner() -> FakeRunner:
 
 
 @pytest.fixture()
-def app(cfg: lp.Config, runner: FakeRunner) -> lp.Launchpad:
-    return lp.Launchpad(cfg, run=runner, watch=False)
+def app(cfg: lp.Config, runner: FakeRunner) -> lp.RCLauncher:
+    return lp.RCLauncher(cfg, run=runner, watch=False)
 
 
 # --------------------------------------------------------------------------- names & paths
@@ -190,7 +190,7 @@ def test_resolve_project_rejects_relative(cfg: lp.Config) -> None:
 
 
 @pytest.mark.unit
-def test_projects_lists_dirs_recent_first(app: lp.Launchpad, roots: Path) -> None:
+def test_projects_lists_dirs_recent_first(app: lp.RCLauncher, roots: Path) -> None:
     app.history.touch(str((roots / "beta").resolve()))
     names = [p["name"] for p in app.projects()]
     assert names[0] == "beta"
@@ -202,17 +202,17 @@ def test_projects_lists_dirs_recent_first(app: lp.Launchpad, roots: Path) -> Non
 
 @pytest.mark.unit
 def test_ghostty_argv(cfg: lp.Config, roots: Path) -> None:
-    argv = lp.ghostty_argv(cfg, "lp-alpha", roots / "alpha", Path("/s/run.sh"), "alpha")
+    argv = lp.ghostty_argv(cfg, "rc-alpha", roots / "alpha", Path("/s/run.sh"), "alpha")
     assert argv[:4] == ["/usr/bin/open", "-na", "/Applications/Ghostty.app", "--args"]
     e = argv.index("-e")
     assert argv[e + 1 :] == [
         "/opt/homebrew/bin/tmux",
         "-L",
-        "launchpad",
+        "claude-rc",
         "new-session",
         "-A",
         "-s",
-        "lp-alpha",
+        "rc-alpha",
         "-c",
         str(roots / "alpha"),
         "/s/run.sh",
@@ -245,7 +245,7 @@ def test_run_script_passes_args_verbatim(tmp_path: Path, cont: bool) -> None:
         cfg, workdir=work, name="alpha", mode="auto", cont=cont, prompt_file=prompt_file, keep_shell=False
     )
     out = subprocess.run(["/bin/bash", "-c", script], check=False, capture_output=True, text=True, timeout=20)
-    assert "[launchpad] claude exited (0)" in out.stdout, out.stderr
+    assert "[rc-launcher] claude exited (0)" in out.stdout, out.stderr
     got = json.loads(argv_file.read_text())
     expected = ["--remote-control=alpha", "--permission-mode", "auto"]
     if cont:
@@ -287,7 +287,7 @@ def test_parse_running_idle_and_busy() -> None:
 
 @pytest.mark.unit
 def test_parse_exited_and_starting_and_login() -> None:
-    st = lp.parse_pane(RUNNING_PANE + "\n[launchpad] claude exited (1)\nlishuyu@mini ~ %\n")
+    st = lp.parse_pane(RUNNING_PANE + "\n[rc-launcher] claude exited (1)\nlishuyu@mini ~ %\n")
     assert (st.state, st.exit_code) == ("exited", 1)
     assert lp.parse_pane("").state == "starting"
     assert lp.parse_pane("Select login method:\n ❯ 1. Claude account\n").state == "needs-login"
@@ -306,7 +306,7 @@ def test_keys_for_option(selected: int, target: int, keys: list[str]) -> None:
 
 @pytest.mark.unit
 def test_start_writes_files_and_opens_ghostty(
-    app: lp.Launchpad, runner: FakeRunner, roots: Path, cfg: lp.Config
+    app: lp.RCLauncher, runner: FakeRunner, roots: Path, cfg: lp.Config
 ) -> None:
     meta = app.start({"dir": str(roots / "alpha"), "prompt": "hello", "mode": "plan"})
     assert meta["name"] == "alpha"
@@ -320,35 +320,35 @@ def test_start_writes_files_and_opens_ghostty(
 
 
 @pytest.mark.unit
-def test_start_uniquifies_names(app: lp.Launchpad, runner: FakeRunner, roots: Path) -> None:
-    runner.live["lp-alpha"] = RUNNING_PANE
+def test_start_uniquifies_names(app: lp.RCLauncher, runner: FakeRunner, roots: Path) -> None:
+    runner.live["rc-alpha"] = RUNNING_PANE
     meta = app.start({"dir": str(roots / "alpha")})
     assert meta["name"] == "alpha-2"
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize("body", [{"dir": "/etc"}, {"dir": "x"}, {}, {"dir": "/tmp", "mode": "yolo"}])
-def test_start_rejects_bad_input(app: lp.Launchpad, body: dict) -> None:
+def test_start_rejects_bad_input(app: lp.RCLauncher, body: dict) -> None:
     with pytest.raises(lp.BadRequest):
         app.start(body)
 
 
 @pytest.mark.unit
-def test_start_reports_open_failure(app: lp.Launchpad, runner: FakeRunner, roots: Path) -> None:
+def test_start_reports_open_failure(app: lp.RCLauncher, runner: FakeRunner, roots: Path) -> None:
     runner.open_rc = 1
     with pytest.raises(lp.LaunchError):
         app.start({"dir": str(roots / "alpha")})
 
 
 @pytest.mark.unit
-def test_watch_step_accepts_trust_once_then_saves_rc_url(app: lp.Launchpad, runner: FakeRunner, roots: Path) -> None:
+def test_watch_step_accepts_trust_once_then_saves_rc_url(app: lp.RCLauncher, runner: FakeRunner, roots: Path) -> None:
     app.start({"dir": str(roots / "alpha")})
-    runner.live["lp-alpha"] = TRUST_PANE
+    runner.live["rc-alpha"] = TRUST_PANE
     flags: dict[str, bool] = {}
     assert app.watch_step("alpha", flags) is False
     assert app.watch_step("alpha", flags) is False  # still on screen: answered only once
     assert runner.sent_keys() == [["Down", "Enter"]]
-    runner.live["lp-alpha"] = RUNNING_PANE
+    runner.live["rc-alpha"] = RUNNING_PANE
     assert app.watch_step("alpha", flags) is True
     sess = app.list_sessions()[0]
     assert sess["state"] == "running"
@@ -356,7 +356,7 @@ def test_watch_step_accepts_trust_once_then_saves_rc_url(app: lp.Launchpad, runn
 
 
 @pytest.mark.unit
-def test_watch_step_marks_failed_launch(app: lp.Launchpad, roots: Path) -> None:
+def test_watch_step_marks_failed_launch(app: lp.RCLauncher, roots: Path) -> None:
     app.start({"dir": str(roots / "alpha")})
     app.clock = lambda: lp.time.time() + 999
     assert app.watch_step("alpha", {}) is True
@@ -364,9 +364,9 @@ def test_watch_step_marks_failed_launch(app: lp.Launchpad, roots: Path) -> None:
 
 
 @pytest.mark.unit
-def test_answer_and_stop(app: lp.Launchpad, runner: FakeRunner, roots: Path, cfg: lp.Config) -> None:
+def test_answer_and_stop(app: lp.RCLauncher, runner: FakeRunner, roots: Path, cfg: lp.Config) -> None:
     app.start({"dir": str(roots / "alpha")})
-    runner.live["lp-alpha"] = NUMBERED_DIALOG_PANE
+    runner.live["rc-alpha"] = NUMBERED_DIALOG_PANE
     sess = app.list_sessions()[0]
     assert sess["state"] == "needs-input" and sess["dialog"]["options"][2] == "3. Don't show again"
     app.answer("alpha", {"option": 1})
@@ -375,19 +375,19 @@ def test_answer_and_stop(app: lp.Launchpad, runner: FakeRunner, roots: Path, cfg
     with pytest.raises(lp.BadRequest):
         app.answer("alpha", {"option": 7})
     app.stop("alpha")
-    assert "lp-alpha" not in runner.live
+    assert "rc-alpha" not in runner.live
     assert not (cfg.state_dir / "sessions" / "alpha").exists()
     with pytest.raises(lp.NotFound):
         app.stop("alpha")
 
 
 @pytest.mark.unit
-def test_ended_and_orphan_sessions(app: lp.Launchpad, runner: FakeRunner, roots: Path) -> None:
+def test_ended_and_orphan_sessions(app: lp.RCLauncher, runner: FakeRunner, roots: Path) -> None:
     app.start({"dir": str(roots / "alpha")})
-    runner.live["lp-alpha"] = RUNNING_PANE
+    runner.live["rc-alpha"] = RUNNING_PANE
     app.list_sessions()  # marks it seen
-    del runner.live["lp-alpha"]
-    runner.live["lp-orphan"] = RUNNING_PANE
+    del runner.live["rc-alpha"]
+    runner.live["rc-orphan"] = RUNNING_PANE
     states = {s["name"]: s["state"] for s in app.list_sessions()}
     assert states == {"alpha": "ended", "orphan": "running"}
 
@@ -396,7 +396,7 @@ def test_ended_and_orphan_sessions(app: lp.Launchpad, runner: FakeRunner, roots:
 
 
 @pytest.fixture()
-def server(app: lp.Launchpad) -> Iterator[str]:
+def server(app: lp.RCLauncher) -> Iterator[str]:
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), lp.make_handler(app))
     t = threading.Thread(target=httpd.serve_forever, daemon=True)
     t.start()
@@ -407,9 +407,9 @@ def server(app: lp.Launchpad) -> Iterator[str]:
 def call(
     url: str, method: str = "GET", body: dict | None = None, headers: dict | None = None
 ) -> tuple[int, dict | str]:
-    h = {"Tailscale-User-Login": "me@example.com", "Host": "launchpad.example.ts.net"}
+    h = {"Tailscale-User-Login": "me@example.com", "Host": "claude-rc.example.ts.net"}
     if method == "POST":
-        h |= {"Content-Type": "application/json", "X-Launchpad": "1", "Origin": "https://launchpad.example.ts.net"}
+        h |= {"Content-Type": "application/json", "X-RC-Launcher": "1", "Origin": "https://claude-rc.example.ts.net"}
     h |= headers or {}
     h = {k: v for k, v in h.items() if v is not None}
     data = json.dumps(body or {}).encode() if method == "POST" else None
@@ -440,7 +440,7 @@ def test_http_identity_and_host_checks(server: str) -> None:
 @pytest.mark.integration
 @pytest.mark.parametrize(
     "bad",
-    [{"X-Launchpad": None}, {"Content-Type": "text/plain"}, {"Origin": "https://evil.example"}],
+    [{"X-RC-Launcher": None}, {"Content-Type": "text/plain"}, {"Origin": "https://evil.example"}],
 )
 def test_http_post_csrf_guards(server: str, roots: Path, runner: FakeRunner, bad: dict) -> None:
     status, _ = call(server + "/api/start", "POST", {"dir": str(roots / "alpha")}, bad)
@@ -455,7 +455,7 @@ def test_http_start_list_stop(server: str, roots: Path, runner: FakeRunner) -> N
     status, body = call(server + "/api/start", "POST", {"dir": str(roots / "beta")})
     assert status == 200 and body["name"] == "beta"
     assert call(server + "/api/start", "POST", {"dir": "/etc"})[0] == 400
-    runner.live["lp-beta"] = RUNNING_PANE
+    runner.live["rc-beta"] = RUNNING_PANE
     status, body = call(server + "/api/sessions")
     assert body["sessions"][0]["state"] == "running"
     assert call(server + "/api/sessions/beta/stop", "POST")[0] == 200

@@ -1,6 +1,6 @@
 {
-  "name": "Claude Launchpad",
-  "short_name": "Launchpad",
+  "name": "Claude RC Launcher",
+  "short_name": "Claude RC",
   "description": "Start a Claude Code session with Remote Control on your Mac.",
   "start_url": "/",
   "scope": "/",

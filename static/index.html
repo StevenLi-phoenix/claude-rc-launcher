@@ -3,14 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Launchpad</title>
+<title>Claude RC</title>
 <meta name="description" content="Start a Claude Code session with Remote Control on this Mac.">
 <meta name="theme-color" content="#1a1714" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#f6f1ea" media="(prefers-color-scheme: light)">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="Launchpad">
+<meta name="apple-mobile-web-app-title" content="Claude RC">
 <link rel="manifest" href="/manifest.webmanifest">
 <link rel="icon" href="/icon.svg" type="image/svg+xml">
 <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -177,7 +177,7 @@ footer a { color: inherit; }
 <div class="wrap">
   <header>
     <img class="logo" src="/icon.svg" alt="">
-    <div class="brand">Launchpad<small data-t="tagline"></small></div>
+    <div class="brand">Claude RC<small data-t="tagline"></small></div>
     <div class="host" id="host"><span class="dot" id="hostDot"></span><b id="hostName">…</b><span id="hostVer"></span></div>
   </header>
 
@@ -216,7 +216,7 @@ footer a { color: inherit; }
       <div class="sessions" id="sessions"></div>
     </section>
   </div>
-  <footer><a href="https://github.com/StevenLi-phoenix/claude-launchpad" target="_blank" rel="noopener">claude-launchpad</a></footer>
+  <footer><a href="https://github.com/StevenLi-phoenix/claude-rc-launcher" target="_blank" rel="noopener">claude-rc-launcher</a></footer>
 </div>
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
@@ -266,8 +266,8 @@ const L = (navigator.language || "en").toLowerCase().startsWith("zh") ? T.zh : T
 document.documentElement.lang = L === T.zh ? "zh-CN" : "en";
 const $ = id => document.getElementById(id);
 const store = {
-  get(k, d) { try { const v = localStorage.getItem("lp." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
-  set(k, v) { try { localStorage.setItem("lp." + k, JSON.stringify(v)); } catch {} },
+  get(k, d) { try { const v = localStorage.getItem("rcl." + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("rcl." + k, JSON.stringify(v)); } catch {} },
 };
 function el(tag, cls, text) { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
 function setText(e, v) { v = v == null ? "" : String(v); if (e.textContent !== v) e.textContent = v; }
@@ -282,7 +282,7 @@ function toast(msg, bad) {
   clearTimeout(toastTimer); toastTimer = setTimeout(() => t.className = "toast" + (bad ? " bad" : ""), bad ? 5000 : 2600);
 }
 async function api(path, body) {
-  const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-Launchpad": "1" }, body: JSON.stringify(body) };
+  const opt = body === undefined ? {} : { method: "POST", headers: { "Content-Type": "application/json", "X-RC-Launcher": "1" }, body: JSON.stringify(body) };
   const r = await fetch(path, opt);
   let data = {}; try { data = await r.json(); } catch {}
   if (!r.ok) throw new Error(data.error || `HTTP ${r.status}`);
