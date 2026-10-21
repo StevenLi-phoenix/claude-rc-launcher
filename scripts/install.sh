@@ -66,7 +66,7 @@ probe_fda() {
   out=$(mktemp -t rc-launcher-fda)
   open -na "$GHOSTTY" --args --title="claude-rc · permission check" --quit-after-last-window-closed=true \
     --window-save-state=never --auto-update=off --confirm-close-surface=false --abnormal-command-exit-runtime=0 -e /bin/bash -c \
-    "if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'"
+    "if head -c 16 '/Library/Application Support/com.apple.TCC/TCC.db' >/dev/null 2>&1; then echo granted; else echo denied; fi > '$out'; sleep 1"
   for _ in $(seq 1 30); do
     [[ -s $out ]] && break
     sleep 0.5
